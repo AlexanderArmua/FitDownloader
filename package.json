@@ -1,6 +1,6 @@
 {
   "name": "fitdownloader",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Development checks for the FitDownloader browser extension",
   "engines": {
@@ -11,7 +11,7 @@
     "test:coverage": "c8 --check-coverage node --test tests/*.test.cjs && node scripts/check-coverage.cjs",
     "test:browser": "playwright test",
     "test:browser:install": "node scripts/install-browser.cjs",
-    "test:regressions": "node --test tests/regressions/*.test.cjs",
+    "test:regressions": "node --test --test-name-pattern=REL- tests/lifecycle.test.cjs",
     "lint": "eslint background.js popup.js options.js tests scripts playwright.config.cjs eslint.config.cjs",
     "check:manifest": "node scripts/check-manifest.cjs",
     "check": "npm run lint && npm run check:manifest && npm run test:coverage"

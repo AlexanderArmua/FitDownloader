@@ -2,6 +2,143 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { harness, tick, deferred } = require('./helpers/background.cjs');
 
+test('REL-02: worker recreation followed by explicit scan restarts eligible queued work', async () => {
+  const first = harness(); first.seed(1);
+  await first.context.saveSessions();
+  const recreated = harness({ local: first.state.local });
+  await recreated.message({ type: 'scan_current_tab' }); await tick();
+  assert.equal(recreated.downloads.length, 1);
+});
+
+test('REL-02: concurrent popup messages share one recovery and do not duplicate downloads', async () => {
+  const first = harness(); first.seed(3); await first.context.saveSessions();
+  const h = harness({ local: first.state.local });
+  await Promise.all([h.message({ type: 'scan_current_tab' }), h.message({ type: 'get_settings' }), h.message({ type: 'get_session' })]);
+  await tick();
+  assert.equal(h.downloads.length, 2);
+});
+
+test('REL-02: a full browser restart retains queued files until explicit Resume', async () => {
+  const first = harness(); first.seed(1); await first.context.saveSessions();
+  const h = harness({ local: first.state.local });
+  await h.emit('startup');
+  const scan = await h.message({ type: 'scan_current_tab' });
+  assert.equal(scan.session.paused, true);
+  assert.equal(h.downloads.length, 0);
+  await h.message({ type: 'resume_downloads', tabId: 1 }); await tick();
+  assert.equal(h.downloads.length, 1);
+});
+
+test('REL-02: a saved verification pause survives worker recreation', async () => {
+  const first = harness(); first.seed(1); first.run('sessions[1].paused=true');
+  await first.context.saveSessions();
+  const h = harness({ local: first.state.local });
+  await h.message({ type: 'scan_current_tab' }); await tick();
+  assert.equal(h.downloads.length, 0);
+  assert.equal(h.run('sessions[1].paused'), true);
+});
+
+test('REL-01: source closure preserves ownership and the queue keeps advancing', async () => {
+  const h = harness(); h.seed(3);
+  await h.run('pumpQueueForTab(1)'); await tick();
+  await h.emit('removed', 1);
+  assert.equal(h.run('sessions[1].sourceClosed'), true);
+  assert.equal(h.run('downloadIdToKey.size'), 2);
+  await h.emit('changed', { id: 1, state: { current: 'complete' } });
+  assert.equal(h.downloads.length, 3);
+});
+
+test('REL-01: a preserved batch is inspectable and controllable from an unrelated page', async () => {
+  const h = harness(); h.seed(2);
+  await h.run('pumpQueueForTab(1)'); await tick();
+  await h.emit('removed', 1);
+  h.state.activeTab = { id: 100, url: 'https://example.com/' };
+  const scan = await h.message({ type: 'scan_current_tab' });
+  assert.equal(scan.ok, true);
+  assert.equal(scan.tabId, 1);
+  assert.equal(scan.batches[0].sourceClosed, true);
+  assert.equal((await h.message({ type: 'pause_downloads', tabId: 1 })).ok, true);
+  assert.deepEqual(h.paused, [1, 2]);
+  assert.equal((await h.message({ type: 'resume_downloads', tabId: 1 })).ok, true);
+  assert.equal((await h.message({ type: 'cancel_downloads', tabId: 1 })).ok, true);
+  assert.deepEqual(h.cancelled, [1, 2]);
+});
+
+test('saved batch selection rejects invalid or missing owner IDs', async () => {
+  const h = harness();
+  for (const tabId of ['1', -99, 999]) {
+    assert.equal((await h.message({ type: 'scan_current_tab', tabId })).ok, false);
+  }
+});
+
+test('an explicit rescan starts fresh selection after viewing terminal results', async () => {
+  const h = harness(); h.seed(1); h.run('sessions[1].items[0].state="completed"');
+  const result = await h.message({ type: 'scan_current_tab', tabId: 1, refresh: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.session.hasStarted, false);
+  assert.equal(result.session.generation, 1);
+  assert.equal(result.session.items[0].state, 'queued');
+});
+
+test('rescan cannot discard an active batch or scan an unrelated site', async () => {
+  const h = harness(); h.seed(1); h.run('sessions[1].paused=true');
+  assert.equal((await h.message({ type: 'scan_current_tab', tabId: 1, refresh: true })).ok, false);
+  h.state.activeTab = { id: 999, url: 'https://example.com/' };
+  assert.equal((await h.message({ type: 'scan_current_tab', refresh: true })).ok, false);
+});
+
+test('REL-03: orphaned starting work is requeued after worker recreation', async () => {
+  const first = harness(); first.seed(1);
+  first.run('sessions[1].items[0].state="starting"');
+  await first.context.saveSessions();
+  const h = harness({ local: first.state.local });
+  await h.context.reconcileSessionForTab(1);
+  assert.equal(h.run('sessions[1].items[0].state'), 'queued');
+});
+
+test('REL-03: scanning during a live resolver does not reset or duplicate its work', async () => {
+  const h = harness(); h.seed(1);
+  const gate = deferred(); let lookups = 0;
+  h.context.fetch = async () => {
+    lookups++;
+    await gate.promise;
+    return { ok: true, text: async () => 'https://dl.fuckingfast.co/dl/test.rar' };
+  };
+  await h.run('pumpQueueForTab(1)');
+  const scan = await h.message({ type: 'scan_current_tab' });
+  assert.equal(scan.session.items[0].state, 'starting');
+  await h.run('pumpQueueForTab(1)');
+  assert.equal(lookups, 1);
+  gate.resolve(); await tick();
+  assert.equal(h.downloads.length, 1);
+  assert.equal(h.run('activeResolvers.size'), 0);
+});
+
+for (const terminal of ['error', 'completed', 'cancelled']) {
+  test(`REL-04: reopening a ${terminal} batch retains its result view`, async () => {
+    const h = harness(); h.seed(1);
+    h.run(`sessions[1].items[0].state=${JSON.stringify(terminal)}`);
+    for (let i = 0; i < 2; i++) {
+      const result = await h.message({ type: 'scan_current_tab' });
+      assert.equal(result.session.hasStarted, true);
+      assert.equal(result.session.items[0].state, terminal);
+    }
+  });
+}
+
+test('REL-04: failed results reconcile and retain Retry after worker recreation', async () => {
+  const first = harness(); first.seed(1);
+  first.run('sessions[1].items[0].downloadId=42; sessions[1].items[0].state="downloading"');
+  await first.context.saveSessions();
+  const h = harness({ local: first.state.local, records: new Map([[42, { id: 42, state: 'interrupted', error: 'NETWORK_FAILED' }]]) });
+  const result = await h.message({ type: 'scan_current_tab' });
+  assert.equal(result.session.hasStarted, true);
+  assert.equal(result.session.items[0].state, 'error');
+  assert.equal((await h.message({ type: 'retry_failed' })).ok, true);
+  await tick();
+  assert.equal(h.downloads.length, 1);
+});
+
 test('a selected batch starts through the popup message boundary and persists ownership', async () => {
   const h = harness();
   const scan = await h.message({ type: 'scan_current_tab' });

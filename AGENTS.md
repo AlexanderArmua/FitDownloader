@@ -39,8 +39,8 @@
 - Run `npm run check` for scoped lint, manifest validation, unit/DOM tests and application coverage. Run `npm run test:browser:install` once and `npm run test:browser` for real Chromium tests. See `tests/README.md` for scope and isolation details.
 - `git diff --check` should pass before a handoff or commit.
 - TEST-01 is implemented: use the c8-based `npm run test:coverage`, not the raw Node coverage command. All application files, including unexecuted scripts, must stay in the denominator; integrity checks reject empty/missing-file reports.
-- `npm run test:regressions` intentionally fails on four tracked recovery defects. These are executable specifications, not skipped tests or passing coverage. Fix each regression, move it into the normal lifecycle suite, and remove the duplicate failing specification. Keep TEST-04 open until all four are fixed.
-- CI includes an explicitly non-blocking known-defect job; remove that exception when recovery specifications all pass. Report passing checks and known failing checks separately.
+- REL-01 through REL-04 are fixed and their regression tests are required in the normal lifecycle suite. `npm run test:regressions` runs that passing recovery subset. There are no known-failure skips, TODO masks, or non-blocking CI exceptions.
+- Browser startup pauses saved queues until explicit Resume; ordinary service-worker recovery reconciles and resumes eligible work. Closed-source batches remain accessible through the popup's Saved batches picker.
 - Tests must not depend on live file-host uptime, advertising, challenge pages, or downloading archives. Use local fixtures and tiny test downloads for browser integration tests.
 - After development commands and CI exist, use the actual repository commands and update this section if they replace the baseline.
 

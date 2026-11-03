@@ -2,24 +2,24 @@
 
 Created: 2026-11-03 (America/Buenos_Aires).
 
-This is a trackable implementation backlog and handoff document for the user's fork. Read alongside `AGENTS.md`. The test foundation is implemented locally; recovery fixes and remaining product work are still pending.
+This is a trackable implementation backlog and handoff document for the user's fork. Read alongside `AGENTS.md`. The test foundation is published on its branch; REL-01 through REL-04 are implemented and validated. Remaining reliability and product work is still tracked below.
 
 ## Resume checkpoint
 
 | Field | Current value |
 | --- | --- |
-| Work status | Test foundation implemented locally: unit/DOM/browser tests, truthful coverage, checks and CI. Four recovery specifications deliberately remain red. |
+| Work status | Test foundation pushed as `7c000d7`, required remote Windows/Linux/browser jobs passed. Recovery milestone REL-01..04 implemented and validated locally; preparing publication of version 0.2.2. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
 | Source baseline | `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e` on local `main`; extension version `0.2.1` |
-| Current implementation branch | `chore/test-foundation`, based on `a4afffa`. Work remains uncommitted; inspect the actual checkout before resuming. |
-| Next task | **REL-04:** run its failing specification, fix terminal-view retention, and promote the passing regression into the required lifecycle suite. Then REL-03, REL-01, REL-02. |
-| First implementation boundary | Test/tooling foundation plus one minimal popup checkbox fix demonstrated red/green in real Chromium. No queue/recovery changes were made. |
-| Next behavior work | Implement REL-01 through REL-04 in focused changes; TEST-04 remains open until their regressions pass. |
-| Current validation | `npm run check`: 104 passing unit/DOM tests; application coverage 90.41% lines, 81.51% branches, 97.87% functions. `npm run test:browser`: all 6 checks pass. `npm run test:regressions`: 4 known failures, intentionally exits 1. |
-| Pending product decisions | Whether closing a source tab should leave the batch running (recommended: yes); restart should offer Resume before new network activity; global concurrency should be opt-in initially. |
-| Blockers | No blocker to recovery work. On this Windows environment, browser tests need normal process permissions; sandbox startup can time out. Remote CI has not run. |
-| Changed areas | npm/lockfile/CI/check scripts; shared Chrome/JSDOM harnesses; host/lifecycle/manifest/coverage/UI tests; Chromium integration; separate red recovery specs; docs and a small native checkbox fix in `popup.js`. |
-| Publication status | No commit, push, release or new PR was created. Existing upstream PR #2 was not changed. |
+| Current implementation branch | `fix/batch-recovery`, based on foundation commit `7c000d7`. Inspect Git for the final published commit. Extension version 0.2.2. |
+| Next task | **REL-05:** stable batch/file identities and migration away from tab/index ownership, then REL-06 full mutation/persistence serialization and REL-07 API-result handling. |
+| Latest implementation boundary | Preserve terminal results, recover orphaned resolvers, retain/control source-closed batches, and reconcile saved work on worker wake. Minimal saved-batch picker and explicit rescan enable recovery access without the larger manager UI. |
+| Next behavior work | Keep REL-05 independent of optional UI/features; reproduce tab-ID reuse and item-index changes before migrating storage/mappings. |
+| Current validation | `npm run check`: 120 passing unit/DOM tests; application coverage 88.69% lines, 82.42% branches, 98.03% functions. `npm run test:browser`: all 8 pass. Recovery subset: all 12 pass, with no skipped/expected-failure tests. |
+| Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
+| Blockers | No local blocker. Windows browser tests need normal process permissions. Foundation remote CI passed; recovery remote CI must be verified after its push. |
+| Changed areas | Worker hydration/recovery/ownership; terminal-state retention; saved-batch targeting/selection/rescan; lifecycle and browser regressions; removal of diagnostic CI exception; version 0.2.2 and docs. |
+| Publication status | User authorized pushing and continuing on 2026-11-03. Foundation branch pushed; publish recovery branch and advance own main only after required CI passes. Existing upstream PR #2 remains unchanged. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
 
@@ -139,7 +139,7 @@ Checkboxes represent completion, not merely that work was attempted. Reference t
 | [x] | TEST-01 | 11 | P1 | Collect truthful application coverage, including unexecuted scripts; eliminate the empty-report 100% trap and document reproduction. |
 | [x] | TEST-02 | 12 | P1 | Add CI for tests, application coverage, applicable static checks, and manifest validation; report local versus remote results separately. Authored locally; remote execution pending publication. |
 | [x] | TEST-03 | 13 | P1 | Establish a verified baseline and coverage floor, then ratchet upward. Enforced overall floors: 85% lines / 75% branches / 95% functions; current results recorded above. |
-| [ ] | TEST-04 | 14 | P1 | Add meaningful regressions for REL-01 through REL-04, each demonstrating the defect before its fix. Complete when all four fixed behaviors are covered. |
+| [x] | TEST-04 | 14 | P1 | All four original defects demonstrated red, fixed, and promoted into the required lifecycle suite; 12 focused recovery checks pass and the diagnostic CI exception is removed. |
 | [x] | TEST-05 | 15 | P1 | Exercise completion, interruption, missing downloads, saved-state hydration, and worker recreation through public event/message boundaries. |
 | [x] | TEST-06 | 16 | P1 | Shared Chrome mocks support delayed/rejected operations, runtime errors, storage quotas, persistence across worker recreation, and controlled event ordering. |
 | [x] | TEST-07 | 17 | P1 | Test popup rendering for selection, empty/active/paused/failed/completed states and retry actions, beyond the existing three settings tests. |
@@ -151,10 +151,10 @@ Checkboxes represent completion, not merely that work was attempted. Reference t
 
 | Done | ID | Review | Priority | Deliverable / acceptance criterion |
 | --- | --- | ---: | --- | --- |
-| [ ] | REL-01 | 1 | P1 | Source-tab closure does not delete ownership of active downloads or silently abandon queued files; persistent manager access remains possible. |
-| [ ] | REL-02 | 2 | P1 | Worker recreation rehydrates and reconciles queues and mappings. Distinguish worker wake from full browser restart; choose/document restart Resume behavior. |
-| [ ] | REL-03 | 3 | P1 | Orphaned `starting` items without a live resolver/download recover to a usable state without creating duplicates. |
-| [ ] | REL-04 | 4 | P1 | Finished/failed batch results and Retry remain available after popup reopen; a deliberate new scan/start is distinct from reopening history. |
+| [x] | REL-01 | 1 | P1 | Source closure retains sessions/mappings; completion continues the queue. Saved batches remain inspectable/controllable from unrelated tabs, verified through the real popup. |
+| [x] | REL-02 | 2 | P1 | Shared once-per-worker hydration/reconciliation resumes eligible queued work; browser startup pauses queues for explicit Resume. Concurrent recovery and saved verification pauses are tested. |
+| [x] | REL-03 | 3 | P1 | Worker-local resolver ownership distinguishes live requests from orphaned persisted `starting` jobs; tests cover both requeueing and avoiding duplicate live requests. |
+| [x] | REL-04 | 4 | P1 | Terminal results/Retry survive reopening and reconciliation; explicit Scan page again starts fresh selection only after active work finishes/cancels. Verified in unit and browser tests. |
 | [ ] | REL-05 | 5 | P1 | Stable batch/file IDs replace dependence on mutable array positions and ephemeral source-tab identity; migrations preserve existing state. |
 | [ ] | REL-06 | 6 | P1 | Serialize mutations/persistence and share hydration promises; controlled concurrency tests prove older reads/writes cannot overwrite newer state. |
 | [ ] | REL-07 | 7 | P1 | Await pause/resume/cancel results; represent API rejection accurately and retain tracking of downloads still running. |
@@ -266,6 +266,21 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Dependency audit after patched `minimatch`/`glob` development overrides reported 0 vulnerabilities. Keep overrides tested when updating dependencies.
 - Implementation/release status: no commit, push, release, or new PR. Existing upstream PR #2 unchanged. Planning files from the prior task remain preserved in the working tree.
 - Exact next step: `node --test --test-name-pattern=REL-04 tests/regressions/recovery.test.cjs`, fix terminal-view retention, and move the passing assertion into `tests/lifecycle.test.cjs`. Then REL-03, REL-01, REL-02. Product decisions about a persistent manager and browser-start resume are still open; do not silently treat the integration rehydration test as automatic queue restart support.
+
+### Future work-log entry template
+
+### 2026-11-03 — Published foundation; completed first recovery milestone
+
+- User explicitly authorized pushing to the fork and continuing implementation. Committed/pushed foundation as `7c000d7` to `origin/chore/test-foundation` and created `fix/batch-recovery` from it.
+- Foundation remote workflow: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41749035632 . Required unit jobs on Windows/Linux and browser job passed; the old known-defect diagnostic job failed as expected before the fixes.
+- Demonstrated REL-04, REL-03, REL-01 and REL-02 specifications failing before fixing each. All assertions now live in the required lifecycle suite. Removed the empty red-spec file and non-blocking CI job; `npm run test:regressions` now runs the passing recovery subset.
+- Fixed terminal result retention and added deliberate rescanning, guarded against replacing active work. Added worker-local resolver ownership to requeue abandoned jobs while leaving live requests alone.
+- Source-tab closure keeps started batch state and download mappings. The popup can discover saved batches from unrelated tabs, select a batch and direct pause/resume/cancel/retry to its owner. Actual source-tab URLs are checked before rescanning; closed sources are not injected into.
+- Shared hydration and once-per-worker recovery reconcile browser downloads before queue pumping. Worker wake continues eligible work; full browser startup pauses queues for user Resume. Full serialization and stable identity migration remain REL-06/REL-05, not claimed complete here.
+- Local validation: 120 unit/DOM tests, all 12 focused recovery tests, lint/manifest checks, all 8 Chromium tests. Coverage: 88.69% lines / 82.42% branches / 98.03% functions, above unchanged floors. Added code explains the change in percentages; thresholds were not weakened.
+- Browser checks use only controlled fixtures and tiny text data, including closed-source popup controls and terminal-history/rescan behavior. Live host compatibility was not retested with an archive.
+- Version bumped to 0.2.2 in manifest/package/lockfile. No release object or upstream PR change was requested or created.
+- Publication: recovery branch is ready to commit/push and requires its remote CI before fast-forwarding own main; final verification will be recorded below. Next implementation task is REL-05, then REL-06/REL-07. Remaining known architectural limits include legacy tab/index ownership, the download-ID persistence window, and non-serialized mutations.
 
 ### Future work-log entry template
 

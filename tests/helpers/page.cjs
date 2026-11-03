@@ -9,7 +9,7 @@ function pageHarness(name = 'popup', responder) {
   const { window } = dom;
   const messages = [];
   let receiver;
-  const state = { session: null, tabId: 1, concurrency: 5, error: null };
+  const state = { session: null, tabId: 1, concurrency: 5, error: null, batches: [] };
   window.chrome = { runtime: {
     onMessage: { addListener(fn) { receiver = fn; } },
     sendMessage(message, callback) {
@@ -21,7 +21,7 @@ function pageHarness(name = 'popup', responder) {
         state.concurrency = message.settings.concurrency;
         return callback({ ok: true, settings: { concurrency: state.concurrency } });
       }
-      if (message.type === 'scan_current_tab') return callback({ ok: true, tabId: state.tabId, session: state.session });
+      if (message.type === 'scan_current_tab') return callback({ ok: true, tabId: state.tabId, session: state.session, batches: state.batches });
       callback({ ok: true });
     }
   } };

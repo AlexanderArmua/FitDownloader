@@ -16,6 +16,9 @@ const activeControlsEl = document.getElementById("active-controls");
 const cancelButtonEl = document.getElementById("cancel-button");
 const pauseResumeButtonEl = document.getElementById("pause-resume-button");
 const retryButtonEl = document.getElementById("retry-button");
+const batchPickerEl = document.getElementById("batch-picker");
+const batchPickerRowEl = document.getElementById("batch-picker-row");
+const rescanButtonEl = document.getElementById("rescan-button");
 
 let currentSession = null;
 let currentTabId = null;
@@ -365,7 +368,7 @@ startButtonEl.addEventListener("click", async () => {
 });
 
 cancelButtonEl.addEventListener("click", () => {
-  chrome.runtime.sendMessage({ type: "cancel_downloads" }, (response) => {
+  chrome.runtime.sendMessage({ type: "cancel_downloads", tabId: currentTabId }, (response) => {
     if (response?.ok) scanCurrentTab();
   });
 });
@@ -373,14 +376,14 @@ cancelButtonEl.addEventListener("click", () => {
 pauseResumeButtonEl.addEventListener("click", () => {
   const isPaused = pauseResumeButtonEl.textContent.trim() === "Resume";
   chrome.runtime.sendMessage(
-    { type: isPaused ? "resume_downloads" : "pause_downloads" },
+    { type: isPaused ? "resume_downloads" : "pause_downloads", tabId: currentTabId },
     () => {}
   );
 });
 
 retryButtonEl.addEventListener("click", () => {
   retryButtonEl.style.display = "none";
-  chrome.runtime.sendMessage({ type: "retry_failed" }, (response) => {
+  chrome.runtime.sendMessage({ type: "retry_failed", tabId: currentTabId }, (response) => {
     if (response?.ok) scanCurrentTab();
   });
 });
@@ -443,8 +446,8 @@ applyParallelButtonEl.addEventListener("click", () => persistConcurrency(paralle
 // Tab scanning & live updates
 // ---------------------------------------------------------------------------
 
-function scanCurrentTab() {
-  chrome.runtime.sendMessage({ type: "scan_current_tab" }, (response) => {
+function scanCurrentTab(tabId = null, refresh = false) {
+  chrome.runtime.sendMessage({ type: "scan_current_tab", tabId, refresh }, (response) => {
     if (!response || !response.ok) {
       statusEl.textContent =
         response?.error ||
@@ -455,9 +458,27 @@ function scanCurrentTab() {
       return;
     }
     currentTabId = response.tabId ?? null;
+    batchPickerEl.replaceChildren();
+    if (response.batches?.length && !response.batches.some((batch) => batch.tabId === currentTabId)) {
+      const currentPage = document.createElement("option");
+      currentPage.value = String(currentTabId);
+      currentPage.textContent = "Current page";
+      batchPickerEl.appendChild(currentPage);
+    }
+    for (const batch of response.batches || []) {
+      const option = document.createElement("option");
+      option.value = String(batch.tabId);
+      option.textContent = batch.title + (batch.sourceClosed ? " (source closed)" : "");
+      batchPickerEl.appendChild(option);
+    }
+    batchPickerEl.value = String(currentTabId);
+    batchPickerRowEl.hidden = !response.batches?.length;
     renderSession(response.session);
   });
 }
+
+batchPickerEl.addEventListener("change", () => scanCurrentTab(Number(batchPickerEl.value)));
+rescanButtonEl.addEventListener("click", () => scanCurrentTab(currentTabId, true));
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== "session_updated") return;

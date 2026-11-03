@@ -147,3 +147,19 @@ test('standalone options page shows load and save failures', t => {
   h.el('save-button').click();
   assert.match(h.el('status').textContent, /Storage unavailable/);
 });
+
+test('saved-batch picker safely displays closed batches and sends the selected owner ID', t => {
+  const h = pageHarness(); t.after(h.close);
+  h.state.session = session(['paused'], { hasStarted: true, paused: true });
+  h.state.batches = [{ tabId: 1, title: '<img>Saved batch', sourceClosed: true }, { tabId: 2, title: 'Other batch' }];
+  h.start();
+  assert.equal(h.el('batch-picker-row').hidden, false);
+  assert.match(h.el('batch-picker').textContent, /<img>Saved batch.*source closed/);
+  assert.equal(h.el('batch-picker').querySelector('img'), null);
+  h.el('pause-resume-button').click();
+  assert.equal(h.messages.at(-1).tabId, 1);
+  h.el('batch-picker').value = '2';
+  h.el('batch-picker').dispatchEvent(new h.window.Event('change'));
+  assert.equal(h.messages.at(-1).type, 'scan_current_tab');
+  assert.equal(h.messages.at(-1).tabId, 2);
+});

@@ -26,6 +26,9 @@ FitDownloader is a simple Chrome extension that scans supported FitGirl repack p
 4. Use the popup selection shortcuts for quicker review: `Shift+Click` selects a range, and `Ctrl+Click` or `Cmd+Click` toggles items individually.
 5. Set **Maximum parallel downloads per batch** (1–20) in the main popup, then click **Start downloads**. The value is saved automatically before starting.
 6. Use **Apply** to save a new limit during a batch, or change it through **Settings**. Increasing the limit fills available slots; decreasing it allows existing downloads to finish before starting more. The limit applies separately to each tab's batch.
+7. You can close the source page after starting a batch. Open the extension from any tab and use **Saved batches** to inspect or control preserved batches.
+8. Finished and failed results stay available when reopening the popup. Use **Retry failed** for failures, or **Scan page again** on the original page for a fresh selection after finishing/cancelling active work.
+9. After a full browser restart, press **Resume** to start queued work. Ordinary background-worker recovery reconciles existing Chrome downloads before continuing eligible queued files.
 
 ## Notes
 
@@ -58,11 +61,11 @@ npm run test:browser:install
 npm run test:browser
 ```
 
-`npm run check` runs scoped lint rules, manifest validation and 104 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
+`npm run check` runs scoped lint rules, manifest validation and 120 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
 
 Browser tests load the real extension in a separate Chromium profile, use controlled page fixtures, and download only a tiny generated text fixture. They do not visit the real file host or open advertising. Browser installation is kept in this project's dependency cache.
 
-Four deliberately failing recovery specifications are available separately with `npm run test:regressions`. They expose the tracked REL-01 through REL-04 defects and are not counted as passing tests or included in coverage. CI runs them as an explicitly non-blocking diagnostic job until the corresponding fixes are implemented. See [tests/README.md](tests/README.md) and [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
+The four original recovery defects now have passing regressions in the required lifecycle suite. Run `npm run test:regressions` for the focused recovery subset. All CI jobs are required to pass; the temporary non-blocking known-defect job has been removed. See [tests/README.md](tests/README.md) and [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
 
 To check live compatibility, reload the unpacked extension and try one selected file before starting a full batch. Automated tests cover the observed download control and simulated host responses; the host's availability and verification requirements can change independently.
 

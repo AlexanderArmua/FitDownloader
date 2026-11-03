@@ -129,7 +129,7 @@ test('pointer checkbox activation and native modifier clicks update selection', 
 
 test('fresh browser context preserves saved settings and session data for rehydration', async ({ extension }) => {
   await extension.worker.evaluate(async () => {
-    await chrome.storage.local.set({ ffSessions: { 123: { tabId: 123, hasStarted: true, items: [{ url: 'https://fuckingfast.co/file', label: 'Saved file', state: 'queued' }] } } });
+    await chrome.storage.local.set({ ffSessions: { 123: { tabId: 123, hasStarted: true, paused: true, items: [{ url: 'https://fuckingfast.co/file', label: 'Saved file', state: 'queued' }] } } });
   });
   const { worker } = await extension.restart();
   const restored = await worker.evaluate(async () => {
@@ -160,4 +160,44 @@ test('Chrome completes a tiny local data download and reconciliation records com
     return sessions[999].items[0].state;
   });
   expect(state).toBe('completed');
+});
+
+test('closed-source batches remain accessible and cancellable through the real popup', async ({ extension }) => {
+  const tabId = await extension.worker.evaluate(async sourceUrl => {
+    const [tab] = await chrome.tabs.query({ url: sourceUrl });
+    sessionsLoaded = true; downloadMapLoaded = true;
+    sessions[tab.id] = createSessionFromExtractedLinks(tab, 'Closed source fixture', [{ url: 'https://fuckingfast.co/file', label: 'Part 1' }], 0);
+    sessions[tab.id].hasStarted = true;
+    sessions[tab.id].paused = true;
+    await saveSessions();
+    return tab.id;
+  }, extension.source.url());
+  await extension.source.close();
+  await expect.poll(() => extension.worker.evaluate(id => sessions[id]?.sourceClosed, tabId)).toBe(true);
+  await extension.popup.goto(`chrome-extension://${extension.id}/popup.html`);
+  await expect(extension.popup.locator('#batch-picker')).toContainText('Closed source fixture (source closed)');
+  await expect(extension.popup.locator('#pause-resume-button')).toHaveText('Resume');
+  await extension.popup.locator('#cancel-button').click();
+  await expect.poll(() => extension.worker.evaluate(id => sessions[id]?.hasStarted, tabId)).toBe(false);
+});
+
+test('failed batch results and Retry remain visible after the popup reopens', async ({ extension }) => {
+  const tabId = await extension.worker.evaluate(async sourceUrl => {
+    const [tab] = await chrome.tabs.query({ url: sourceUrl });
+    sessionsLoaded = true; downloadMapLoaded = true;
+    sessions[tab.id] = createSessionFromExtractedLinks(tab, 'Failed fixture', [{ url: 'https://fuckingfast.co/file', label: 'Part 1' }], 0);
+    sessions[tab.id].hasStarted = true;
+    sessions[tab.id].items[0].state = 'error';
+    sessions[tab.id].items[0].error = 'Controlled failure';
+    return tab.id;
+  }, extension.source.url());
+  await extension.popup.goto(`chrome-extension://${extension.id}/popup.html`);
+  await expect(extension.popup.locator('#retry-button')).toBeVisible();
+  await extension.popup.reload();
+  await expect(extension.popup.locator('#retry-button')).toBeVisible();
+  await expect(extension.popup.locator('#status')).toContainText('Controlled failure');
+  expect(await extension.worker.evaluate(id => sessions[id].items[0].state, tabId)).toBe('error');
+  await extension.popup.locator('#rescan-button').click();
+  await expect(extension.popup.locator('#select-all-row')).toBeVisible();
+  await expect(extension.popup.locator('#files-list input')).toHaveCount(3);
 });

@@ -10,7 +10,7 @@ module.exports = [
   { files: ['background.js', 'popup.js', 'options.js'], languageOptions: { globals: globals(browser) } },
   { files: ['**/*.cjs'], languageOptions: { sourceType: 'commonjs', globals: globals([...node, ...browser]) } },
   { files: ['tests/browser/*.cjs'], languageOptions: { globals: {
-    extractFuckingFastLinks: 'readonly', createSessionFromExtractedLinks: 'readonly', reconcileSessionForTab: 'readonly', loadSessions: 'readonly', getCurrentSettings: 'readonly',
+    extractFuckingFastLinks: 'readonly', createSessionFromExtractedLinks: 'readonly', reconcileSessionForTab: 'readonly', loadSessions: 'readonly', getCurrentSettings: 'readonly', saveSessions: 'readonly',
     sessionsLoaded: 'writable', downloadMapLoaded: 'writable', sessions: 'writable'
   } } }
 ];

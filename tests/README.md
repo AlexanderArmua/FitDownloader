@@ -20,7 +20,7 @@ npm run test:browser
 | `npm run check` | Required local static/unit/coverage checks. |
 | `npm run test:browser:install` | Download pinned Playwright Chromium into `node_modules/.cache/ms-playwright`. |
 | `npm run test:browser` | Real MV3 extension and popup tests in isolated temporary Chromium profiles. |
-| `npm run test:regressions` | Desired recovery behavior; currently four failures, intentionally exits nonzero. |
+| `npm run test:regressions` | Passing REL-01..04 recovery subset of the required lifecycle suite. |
 
 On Linux, Chromium may also need system libraries: use Playwright's documented `npx playwright install-deps chromium` command. Windows sandbox restrictions can prevent browser startup; running the same tests with normal process permissions may be necessary. Do not change production extension permissions or browser-security settings to make tests pass.
 
@@ -46,21 +46,21 @@ Application scripts execute in named VM contexts. c8 uses `all: true`, includes 
 
 Current local measurement is recorded in the plan. Re-measure after changes; a high line count does not prove lifecycle correctness. Branch coverage is lower for standalone options error paths and should be improved when that duplicated UI is consolidated.
 
-## Known failures must stay visible
+## Recovery regressions are required
 
-`regressions/recovery.test.cjs` contains executable desired-behavior assertions for:
+The four original desired-behavior specifications were each demonstrated failing, then fixed and promoted into `lifecycle.test.cjs`:
 
 1. REL-01: source-tab closure must preserve active batch ownership.
 2. REL-03: orphaned `starting` jobs must be recoverable.
 3. REL-04: reopening a failed batch must preserve its retry/result view.
 4. REL-02: explicit scan after worker recreation must restart an eligible unpaused saved queue.
 
-These tests run normally and fail; they are not skipped or marked TODO. They are separated from the passing characterization suite so the test-foundation change does not pretend to fix production recovery. The CI job `known-recovery-defects` has `continue-on-error: true` and remains visibly diagnostic. Do not claim all tests pass while these defects remain.
+All now pass in the standard unit/coverage command. `npm run test:regressions` selects the focused recovery subset; it is not a second collection of skipped or expected failures. The separate red-spec file and non-blocking CI job have been removed.
 
-For each recovery fix: run the corresponding specification red, implement the fix, move its passing test into the normal lifecycle suite, and remove the duplicate specification. Once no known failures remain, remove the diagnostic job and make recovery tests required. TEST-04 stays open until all four fixed behaviors are covered.
+Additional tests cover concurrent recovery without duplicate starts, a saved verification pause, live resolver ownership, full browser-start Resume behavior, detached batch controls, and explicit rescanning. Browser tests verify closed-source access and failed-result retention through the real popup. Stable batch IDs and complete mutation serialization remain separate planned work (REL-05/REL-06).
 
 ## Dependency and CI notes
 
 The lockfile pins the test stack. `minimatch` and `glob` overrides select patched releases for development tools; rerun all checks after changing them. No npm package is bundled into the production extension by this setup.
 
-CI runs static/unit/coverage checks on Windows and Linux, browser checks on Linux, and the separate known-failure diagnostic job. Actions are pinned to verified commit revisions and workflow permissions are read-only. Local passing results do not establish remote CI success until the branch has been pushed and GitHub checks have run.
+CI runs static/unit/coverage checks on Windows and Linux and browser checks on Linux, with no non-blocking exceptions. Actions are pinned to verified commit revisions and workflow permissions are read-only. Local passing results do not establish remote CI success until the branch has been pushed and GitHub checks have run.

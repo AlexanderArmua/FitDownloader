@@ -19,6 +19,7 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
   const chrome = {
     runtime: {
       onMessage: event('message'),
+      onStartup: event('startup'),
       sendMessage(message, callback) { broadcasts.push(clone(message)); callback(); }
     },
     storage: {
@@ -31,7 +32,11 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
         set(settings, callback) { state.concurrency = settings.concurrency; callback(); }
       }
     },
-    tabs: { query: async () => state.activeTab ? [state.activeTab] : [], onRemoved: event('removed') },
+    tabs: {
+      query: async () => state.activeTab ? [state.activeTab] : [],
+      get: async id => { if (state.activeTab?.id === id) return clone(state.activeTab); throw new Error('Tab closed'); },
+      onRemoved: event('removed')
+    },
     downloads: {
       onChanged: event('changed'),
       search(query, callback) { callback(records.has(query.id) ? [clone(records.get(query.id))] : []); },
@@ -68,7 +73,15 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
       Array.from({length: ${count}}, (_, i) => ({url: 'https://fuckingfast.co/file' + i, label: 'File ' + i})), 0);
     sessions[1].hasStarted = true;
   `);
-  const emit = async (name, value) => { listeners[name](value); await tick(); };
+  const emit = async (name, value) => {
+    if (name === 'changed' && records.has(value.id)) {
+      const record = records.get(value.id);
+      if (value.state) record.state = value.state.current;
+      if (value.error) record.error = value.error.current;
+      if (value.paused) record.paused = value.paused.current;
+    }
+    listeners[name](value); await tick();
+  };
   return { context, chrome, requests, downloads, paused, resumed, cancelled, broadcasts, warnings, state, listeners, run, message, seed, emit };
 }
 module.exports = { harness, tick, deferred, root };

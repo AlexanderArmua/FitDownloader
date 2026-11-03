@@ -40,11 +40,21 @@ function validateDirectUrl(value) {
 // sessions[tabId] = { tabId, sourceUrl, hasStarted, items: [{ url, label, state, downloadId|null }] }
 let sessions = {};
 let sessionsLoaded = false;
+let sessionsLoadPromise;
+let recoveryPromise;
+let browserRestart = false;
 
 // Map downloadId -> { tabId, index } into sessions[tabId].items
 let downloadIdToKey = new Map();
 let downloadMapLoaded = false;
+let downloadMapLoadPromise;
 const ACTIVE_ITEM_STATES = new Set(["queued", "starting", "downloading", "paused"]);
+// Worker-local ownership distinguishes a live resolver from persisted work
+// left behind when an earlier service worker was terminated.
+const activeResolvers = new Set();
+function resolverKey(tabId, index, generation) {
+  return `${tabId}:${index}:${generation}`;
+}
 
 function clampConcurrency(value) {
   const n = Number(value);
@@ -62,16 +72,17 @@ async function getCurrentSettings() {
 
 async function loadDownloadMap() {
   if (downloadMapLoaded) return;
-  const stored = await chrome.storage.local.get("ffDownloadMap");
-  if (stored.ffDownloadMap && typeof stored.ffDownloadMap === "object") {
-    downloadIdToKey = new Map(
-      Object.entries(stored.ffDownloadMap).map(([id, key]) => [
-        Number(id),
-        key
-      ])
-    );
-  }
-  downloadMapLoaded = true;
+  if (downloadMapLoadPromise) return downloadMapLoadPromise;
+  downloadMapLoadPromise = (async () => {
+    const stored = await chrome.storage.local.get("ffDownloadMap");
+    if (stored.ffDownloadMap && typeof stored.ffDownloadMap === "object") {
+      downloadIdToKey = new Map(
+        Object.entries(stored.ffDownloadMap).map(([id, key]) => [Number(id), key])
+      );
+    }
+    downloadMapLoaded = true;
+  })().catch((error) => { downloadMapLoadPromise = null; throw error; });
+  return downloadMapLoadPromise;
 }
 
 async function saveDownloadMap() {
@@ -84,12 +95,40 @@ async function saveDownloadMap() {
 
 async function loadSessions() {
   if (sessionsLoaded) return;
-  const stored = await chrome.storage.local.get("ffSessions");
-  if (stored.ffSessions && typeof stored.ffSessions === "object") {
-    sessions = stored.ffSessions;
-  }
-  sessionsLoaded = true;
+  if (sessionsLoadPromise) return sessionsLoadPromise;
+  sessionsLoadPromise = (async () => {
+    const stored = await chrome.storage.local.get("ffSessions");
+    if (stored.ffSessions && typeof stored.ffSessions === "object") {
+      sessions = stored.ffSessions;
+    }
+    sessionsLoaded = true;
+  })().catch((error) => { sessionsLoadPromise = null; throw error; });
+  return sessionsLoadPromise;
 }
+
+// Run once per worker wake. Existing Chrome downloads are reconciled before
+// eligible queued work is resumed; a full browser restart requires user Resume.
+function recoverSessions() {
+  if (recoveryPromise) return recoveryPromise;
+  recoveryPromise = (async () => {
+    await loadSessions();
+    await loadDownloadMap();
+    for (const id of Object.keys(sessions)) {
+      if (browserRestart && sessions[id].hasStarted) sessions[id].paused = true;
+      await reconcileSessionForTab(Number(id));
+    }
+    if (browserRestart) await saveSessions();
+    for (const id of Object.keys(sessions)) {
+      await pumpQueueForTab(Number(id));
+    }
+  })().catch((error) => { recoveryPromise = null; throw error; });
+  return recoveryPromise;
+}
+
+chrome.runtime.onStartup.addListener(() => {
+  browserRestart = true;
+  recoverSessions().catch(console.error);
+});
 
 async function saveSessions() {
   await chrome.storage.local.set({ ffSessions: sessions });
@@ -199,8 +238,9 @@ function shouldReuseSessionForTab(session, tab) {
     return true;
   }
 
-  // Pre-start state can be reused on the same page.
-  if (!session.hasStarted && samePage) {
+  // Reopening a popup must preserve selection or terminal results on the same
+  // page. A new batch is started explicitly, not by discarding its history.
+  if (samePage) {
     return true;
   }
 
@@ -265,6 +305,10 @@ async function reconcileSessionForTab(tabId) {
 
     if (item.downloadId == null) {
       if (item.state === "starting") {
+        if (!activeResolvers.has(resolverKey(tabId, i, getSessionGeneration(session)))) {
+          item.state = "queued";
+          sessionsChanged = true;
+        }
         continue;
       }
       if (item.state === "downloading" || item.state === "paused") {
@@ -325,8 +369,7 @@ async function reconcileSessionForTab(tabId) {
     }
   }
 
-  if (session.hasStarted && !hasActiveItems(session)) {
-    session.hasStarted = false;
+  if (session.hasStarted && !hasActiveItems(session) && session.paused) {
     session.paused = false;
     sessionsChanged = true;
   }
@@ -603,6 +646,8 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
     availableSlots--;
     item.state = "starting";
     item.error = "";
+    const ownershipKey = resolverKey(tabId, i, runGeneration);
+    activeResolvers.add(ownershipKey);
 
     (async (index, generation) => {
       try {
@@ -658,6 +703,8 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
         await saveSessions();
         broadcastSessionUpdate(tabId);
         pumpQueueForTab(tabId, generation);
+      } finally {
+        activeResolvers.delete(ownershipKey);
       }
     })(i, runGeneration);
   }
@@ -672,7 +719,17 @@ chrome.downloads.onChanged.addListener((delta) => {
 
   (async () => {
     await loadDownloadMap();
-    const key = downloadIdToKey.get(delta.id);
+    let key = downloadIdToKey.get(delta.id);
+    if (!key) return;
+    await loadSessions();
+    const owner = sessions[key.tabId];
+    if (!owner?.items?.[key.index] || getSessionGeneration(owner) !== key.generation) {
+      downloadIdToKey.delete(delta.id);
+      await saveDownloadMap();
+      return;
+    }
+    await recoverSessions();
+    key = downloadIdToKey.get(delta.id);
     if (!key) return;
 
     await loadSessions();
@@ -710,10 +767,17 @@ chrome.downloads.onChanged.addListener((delta) => {
   })();
 });
 
-// Clean up tab-scoped sessions when a tab is closed
+// Closing a source page must not abandon an already-started batch. Its owner
+// key remains stable for in-flight resolvers and download completion events.
 chrome.tabs.onRemoved.addListener((tabId) => {
   (async () => {
     await loadSessions();
+    if (sessions[tabId]?.hasStarted) {
+      sessions[tabId].sourceClosed = true;
+      await saveSessions();
+      broadcastSessionUpdate(tabId);
+      return;
+    }
     if (sessions[tabId]) {
       delete sessions[tabId];
       await saveSessions();
@@ -733,6 +797,31 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   })();
 });
 
+function getBatchSummaries() {
+  return Object.entries(sessions)
+    .filter(([, session]) => session.hasStarted)
+    .map(([id, session]) => ({
+      tabId: Number(id), title: session.title || session.sourceUrl || `Batch ${id}`,
+      sourceClosed: session.sourceClosed === true
+    }));
+}
+
+async function getControlTab(message) {
+  if (message.tabId != null) {
+    if (!Number.isInteger(message.tabId) || !sessions[message.tabId]) {
+      throw new Error("This batch is no longer available.");
+    }
+    const session = sessions[message.tabId];
+    if (!session.sourceClosed) {
+      try { return await chrome.tabs.get(message.tabId); }
+      catch { /* The source can close before its removal event is processed. */ }
+    }
+    return { id: message.tabId, url: session.sourceUrl, detached: true };
+  }
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
+
 // Message-based API for popup UIs
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") {
@@ -742,12 +831,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "scan_current_tab") {
     (async () => {
       try {
+        await recoverSessions();
+        if (message.refresh === true) {
+          const target = await getControlTab(message);
+          if (!target || target.detached || !isSupportedSource(target.url)) {
+            throw new Error("Open the original HTTPS FitGirl page to scan again.");
+          }
+          if (hasActiveItems(sessions[target.id])) {
+            throw new Error("Finish or cancel the current batch before scanning again.");
+          }
+          const generation = getSessionGeneration(sessions[target.id]) + 1;
+          const session = await rebuildSessionForTab(target, generation);
+          sendResponse({ ok: true, session, tabId: target.id, batches: getBatchSummaries() });
+          return;
+        }
+        if (message.tabId != null) {
+          const selected = await getControlTab(message);
+          await reconcileSessionForTab(selected.id);
+          sendResponse({ ok: true, session: sessions[selected.id], tabId: selected.id, batches: getBatchSummaries() });
+          return;
+        }
         const [tab] = await chrome.tabs.query({
           active: true,
           currentWindow: true
         });
 
         if (!tab || !tab.id || !isSupportedSource(tab.url)) {
+          const [available] = getBatchSummaries();
+          if (available) {
+            await reconcileSessionForTab(available.tabId);
+            sendResponse({ ok: true, session: sessions[available.tabId], tabId: available.tabId, batches: getBatchSummaries() });
+            return;
+          }
           sendResponse({
             ok: false,
             error: "Please open a FitGirl repack page first."
@@ -756,7 +871,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         const sess = await ensureSessionForTab(tab);
-        sendResponse({ ok: true, session: sess, tabId: tab.id });
+        sendResponse({ ok: true, session: sess, tabId: tab.id, batches: getBatchSummaries() });
       } catch (err) {
         console.error("scan_current_tab failed:", err);
         sendResponse({ ok: false, error: err.message || String(err) });
@@ -857,6 +972,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "get_settings") {
     (async () => {
       try {
+        await recoverSessions();
         const current = await getCurrentSettings();
         sendResponse({ ok: true, settings: current });
       } catch (err) {
@@ -893,7 +1009,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "get_session") {
     (async () => {
       try {
-        await loadSessions();
+        await recoverSessions();
         sendResponse({ ok: true, sessions });
       } catch (err) {
         sendResponse({ ok: false, error: err.message || String(err) });
@@ -906,10 +1022,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         await loadSessions();
-        const [tab] = await chrome.tabs.query({
-          active: true,
-          currentWindow: true
-        });
+        const tab = await getControlTab(message);
         if (!tab || !tab.url) {
           sendResponse({
             ok: false,
@@ -952,7 +1065,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // Rebuild immediately for the current page so popup opens into fresh
         // detection state without requiring a manual reset action.
-        if (isSupportedSource(tab.url)) {
+        if (!tab.detached && isSupportedSource(tab.url)) {
           const refreshed = await rebuildSessionForTab(tab, session.generation);
           sessions[tabId] = refreshed;
         }
@@ -970,10 +1083,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         await loadSessions();
-        const [tab] = await chrome.tabs.query({
-          active: true,
-          currentWindow: true
-        });
+        const tab = await getControlTab(message);
         if (!tab || !tab.url) {
           sendResponse({
             ok: false,
@@ -1029,10 +1139,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         await loadSessions();
-        const [tab] = await chrome.tabs.query({
-          active: true,
-          currentWindow: true
-        });
+        const tab = await getControlTab(message);
         if (!tab || !tab.url) {
           sendResponse({ ok: false, error: "No active FitGirl tab found." });
           return;
