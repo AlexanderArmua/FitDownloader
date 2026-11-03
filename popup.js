@@ -21,7 +21,7 @@ const batchPickerRowEl = document.getElementById("batch-picker-row");
 const rescanButtonEl = document.getElementById("rescan-button");
 
 let currentSession = null;
-let currentTabId = null;
+let currentBatchId = null;
 
 let lastClickedIndex = -1;
 let highlightedIndices = new Set();
@@ -141,7 +141,7 @@ function renderSelectionView(session) {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = true;
-    checkbox.dataset.index = String(index);
+    checkbox.dataset.itemId = item.id;
 
     const label = document.createElement("label");
     label.textContent = item.label || item.url;
@@ -308,15 +308,8 @@ function getSelectedItemsForStart() {
   const checkboxes = filesListEl.querySelectorAll('input[type="checkbox"]');
   checkboxes.forEach((cb) => {
     if (!cb.checked) return;
-    const idx = Number(cb.dataset.index);
-    if (
-      Number.isInteger(idx) &&
-      currentSession &&
-      currentSession.items &&
-      currentSession.items[idx]
-    ) {
-      selected.push(currentSession.items[idx]);
-    }
+    const item = currentSession?.items?.find(item => item.id === cb.dataset.itemId);
+    if (item) selected.push(item);
   });
   return selected;
 }
@@ -350,7 +343,7 @@ startButtonEl.addEventListener("click", async () => {
   statusEl.textContent = "Starting downloads\u2026";
 
   chrome.runtime.sendMessage(
-    { type: "start_downloads", items: selected },
+    { type: "start_downloads", batchId: currentBatchId, items: selected },
     (response) => {
       if (!response || !response.ok) {
         statusEl.textContent = `Error: ${
@@ -368,7 +361,7 @@ startButtonEl.addEventListener("click", async () => {
 });
 
 cancelButtonEl.addEventListener("click", () => {
-  chrome.runtime.sendMessage({ type: "cancel_downloads", tabId: currentTabId }, (response) => {
+  chrome.runtime.sendMessage({ type: "cancel_downloads", batchId: currentBatchId }, (response) => {
     if (response?.ok) scanCurrentTab();
   });
 });
@@ -376,14 +369,14 @@ cancelButtonEl.addEventListener("click", () => {
 pauseResumeButtonEl.addEventListener("click", () => {
   const isPaused = pauseResumeButtonEl.textContent.trim() === "Resume";
   chrome.runtime.sendMessage(
-    { type: isPaused ? "resume_downloads" : "pause_downloads", tabId: currentTabId },
+    { type: isPaused ? "resume_downloads" : "pause_downloads", batchId: currentBatchId },
     () => {}
   );
 });
 
 retryButtonEl.addEventListener("click", () => {
   retryButtonEl.style.display = "none";
-  chrome.runtime.sendMessage({ type: "retry_failed", tabId: currentTabId }, (response) => {
+  chrome.runtime.sendMessage({ type: "retry_failed", batchId: currentBatchId }, (response) => {
     if (response?.ok) scanCurrentTab();
   });
 });
@@ -446,8 +439,8 @@ applyParallelButtonEl.addEventListener("click", () => persistConcurrency(paralle
 // Tab scanning & live updates
 // ---------------------------------------------------------------------------
 
-function scanCurrentTab(tabId = null, refresh = false) {
-  chrome.runtime.sendMessage({ type: "scan_current_tab", tabId, refresh }, (response) => {
+function scanCurrentTab(batchId = null, refresh = false) {
+  chrome.runtime.sendMessage({ type: "scan_current_tab", batchId, refresh }, (response) => {
     if (!response || !response.ok) {
       statusEl.textContent =
         response?.error ||
@@ -457,32 +450,32 @@ function scanCurrentTab(tabId = null, refresh = false) {
       selectAllRowEl.hidden = true;
       return;
     }
-    currentTabId = response.tabId ?? null;
+    currentBatchId = response.batchId ?? null;
     batchPickerEl.replaceChildren();
-    if (response.batches?.length && !response.batches.some((batch) => batch.tabId === currentTabId)) {
+    if (response.batches?.length && !response.batches.some((batch) => batch.batchId === currentBatchId)) {
       const currentPage = document.createElement("option");
-      currentPage.value = String(currentTabId);
+      currentPage.value = String(currentBatchId);
       currentPage.textContent = "Current page";
       batchPickerEl.appendChild(currentPage);
     }
     for (const batch of response.batches || []) {
       const option = document.createElement("option");
-      option.value = String(batch.tabId);
+      option.value = String(batch.batchId);
       option.textContent = batch.title + (batch.sourceClosed ? " (source closed)" : "");
       batchPickerEl.appendChild(option);
     }
-    batchPickerEl.value = String(currentTabId);
+    batchPickerEl.value = String(currentBatchId);
     batchPickerRowEl.hidden = !response.batches?.length;
     renderSession(response.session);
   });
 }
 
-batchPickerEl.addEventListener("change", () => scanCurrentTab(Number(batchPickerEl.value)));
-rescanButtonEl.addEventListener("click", () => scanCurrentTab(currentTabId, true));
+batchPickerEl.addEventListener("change", () => scanCurrentTab(batchPickerEl.value));
+rescanButtonEl.addEventListener("click", () => scanCurrentTab(currentBatchId, true));
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== "session_updated") return;
-  if (currentTabId == null || message.tabId !== currentTabId) return;
+  if (currentBatchId == null || message.batchId !== currentBatchId) return;
   if (message.session) renderSession(message.session);
 });
 

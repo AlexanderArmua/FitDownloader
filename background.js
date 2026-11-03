@@ -36,25 +36,122 @@ function validateDirectUrl(value) {
   return url.href;
 }
 
-// In-memory sessions keyed by Chrome tab ID
-// sessions[tabId] = { tabId, sourceUrl, hasStarted, items: [{ url, label, state, downloadId|null }] }
-let sessions = {};
+// Durable batch ownership is independent of Chrome tabs and queue positions.
+const STATE_KEY = "ffBatchState";
+const STATE_VERSION = 2;
+let sessions = Object.create(null);
 let sessionsLoaded = false;
-let sessionsLoadPromise;
+let downloadMapLoaded = false;
+let stateLoadPromise;
 let recoveryPromise;
 let browserRestart = false;
-
-// Map downloadId -> { tabId, index } into sessions[tabId].items
 let downloadIdToKey = new Map();
-let downloadMapLoaded = false;
-let downloadMapLoadPromise;
 const ACTIVE_ITEM_STATES = new Set(["queued", "starting", "downloading", "paused"]);
-// Worker-local ownership distinguishes a live resolver from persisted work
-// left behind when an earlier service worker was terminated.
 const activeResolvers = new Set();
-function resolverKey(tabId, index, generation) {
-  return `${tabId}:${index}:${generation}`;
+function validId(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value); }
+function durableId(value) { return validId(value) ? value : crypto.randomUUID(); }
+function resolverKey(batchId, itemId, generation) { return JSON.stringify([batchId, itemId, generation]); }
+function stateSnapshot(batches = sessions, map = downloadIdToKey) {
+  return { schemaVersion: STATE_VERSION, batches, downloadMap: Object.fromEntries(map) };
 }
+function rebuildDownloadMap(batches, rawMap = {}) {
+  const map = new Map();
+  for (const [id, key] of Object.entries(rawMap)) {
+    const downloadId = Number(id);
+    const batch = batches[key?.batchId];
+    const item = batch?.items.find(item => item.id === key.itemId);
+    if (Number.isInteger(downloadId) && downloadId >= 0 && item && key.generation === batch.generation &&
+        ACTIVE_ITEM_STATES.has(item.state) && (item.downloadId == null || item.downloadId === downloadId)) {
+      item.downloadId = downloadId;
+      map.set(downloadId, { batchId: batch.id, itemId: item.id, generation: batch.generation });
+    }
+  }
+  for (const batch of Object.values(batches)) {
+    for (const item of batch.items) {
+      const existing = item.downloadId != null && map.get(item.downloadId);
+      if (existing && (existing.batchId !== batch.id || existing.itemId !== item.id)) {
+        throw new Error("Saved download ownership is ambiguous. Existing data has been preserved.");
+      }
+      if (item.downloadId != null && !map.has(item.downloadId)) {
+        map.set(item.downloadId, { batchId: batch.id, itemId: item.id, generation: batch.generation });
+      }
+    }
+  }
+  return map;
+}
+function migrateLegacyState(rawSessions, rawMap) {
+  const batches = Object.create(null);
+  const ownerIds = new Map();
+  for (const [legacyId, raw] of Object.entries(rawSessions || {})) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const batch = normalizeSessionShape({ ...raw, id: crypto.randomUUID(),
+      sourceTabId: Number.isInteger(raw.tabId) ? raw.tabId : Number(legacyId) });
+    batches[batch.id] = batch;
+    ownerIds.set(String(legacyId), batch);
+  }
+  const mapped = {};
+  for (const [downloadId, key] of Object.entries(rawMap || {})) {
+    const batch = ownerIds.get(String(key?.tabId));
+    const rawItem = rawSessions?.[key?.tabId]?.items?.[key?.index];
+    if (!batch || !rawItem || key.generation !== batch.generation) continue;
+    const link = normalizeLandingUrl(rawItem.url);
+    const item = batch.items.find(item => item.downloadId === Number(downloadId)) ||
+      batch.items.find(item => item.url === link && item.downloadId == null);
+    if (item) mapped[downloadId] = { batchId: batch.id, itemId: item.id, generation: key.generation };
+  }
+  return { batches, map: rebuildDownloadMap(batches, mapped) };
+}
+async function loadState() {
+  if (sessionsLoaded && downloadMapLoaded) return;
+  if (stateLoadPromise) return stateLoadPromise;
+  stateLoadPromise = (async () => {
+    const stored = await chrome.storage.local.get([STATE_KEY, "ffSessions", "ffDownloadMap"]);
+    const state = stored[STATE_KEY];
+    let batches, map;
+    if (state != null) {
+      if (state.schemaVersion !== STATE_VERSION || !state.batches || typeof state.batches !== "object" ||
+          Array.isArray(state.batches) || !state.downloadMap || typeof state.downloadMap !== "object" || Array.isArray(state.downloadMap)) {
+        throw new Error("Saved batch state is invalid or from an unsupported version. Existing data has been preserved.");
+      }
+      batches = Object.create(null);
+      for (const [id, raw] of Object.entries(state.batches)) {
+        if (!validId(id) || !raw || raw.id !== id || !Array.isArray(raw.items)) {
+          throw new Error("Saved batch identity is invalid. Existing data has been preserved.");
+        }
+        batches[id] = normalizeSessionShape(raw);
+      }
+      map = rebuildDownloadMap(batches, state.downloadMap);
+    } else {
+      ({ batches, map } = migrateLegacyState(stored.ffSessions, stored.ffDownloadMap));
+      // Commit the complete migration atomically; keep legacy keys untouched.
+      await chrome.storage.local.set({ [STATE_KEY]: stateSnapshot(batches, map) });
+    }
+    sessions = batches; downloadIdToKey = map;
+    sessionsLoaded = downloadMapLoaded = true;
+  })().catch(error => { stateLoadPromise = null; throw error; });
+  return stateLoadPromise;
+}
+async function loadSessions() { return loadState(); }
+async function loadDownloadMap() { return loadState(); }
+async function saveSessions() { await chrome.storage.local.set({ [STATE_KEY]: stateSnapshot() }); }
+async function saveDownloadMap() { return saveSessions(); }
+function recoverSessions() {
+  if (recoveryPromise) return recoveryPromise;
+  recoveryPromise = (async () => {
+    await loadState();
+    for (const batch of Object.values(sessions)) {
+      if (browserRestart) {
+        batch.sourceAttached = false;
+        if (batch.hasStarted) batch.paused = true;
+      }
+      await reconcileBatch(batch.id);
+    }
+    await saveSessions();
+    for (const id of Object.keys(sessions)) await pumpQueueForBatch(id);
+  })().catch(error => { recoveryPromise = null; throw error; });
+  return recoveryPromise;
+}
+chrome.runtime.onStartup.addListener(() => { browserRestart = true; recoverSessions().catch(console.error); });
 
 function clampConcurrency(value) {
   const n = Number(value);
@@ -70,75 +167,13 @@ async function getCurrentSettings() {
   };
 }
 
-async function loadDownloadMap() {
-  if (downloadMapLoaded) return;
-  if (downloadMapLoadPromise) return downloadMapLoadPromise;
-  downloadMapLoadPromise = (async () => {
-    const stored = await chrome.storage.local.get("ffDownloadMap");
-    if (stored.ffDownloadMap && typeof stored.ffDownloadMap === "object") {
-      downloadIdToKey = new Map(
-        Object.entries(stored.ffDownloadMap).map(([id, key]) => [Number(id), key])
-      );
-    }
-    downloadMapLoaded = true;
-  })().catch((error) => { downloadMapLoadPromise = null; throw error; });
-  return downloadMapLoadPromise;
-}
-
-async function saveDownloadMap() {
-  const obj = {};
-  for (const [id, key] of downloadIdToKey.entries()) {
-    obj[id] = key;
-  }
-  await chrome.storage.local.set({ ffDownloadMap: obj });
-}
-
-async function loadSessions() {
-  if (sessionsLoaded) return;
-  if (sessionsLoadPromise) return sessionsLoadPromise;
-  sessionsLoadPromise = (async () => {
-    const stored = await chrome.storage.local.get("ffSessions");
-    if (stored.ffSessions && typeof stored.ffSessions === "object") {
-      sessions = stored.ffSessions;
-    }
-    sessionsLoaded = true;
-  })().catch((error) => { sessionsLoadPromise = null; throw error; });
-  return sessionsLoadPromise;
-}
-
-// Run once per worker wake. Existing Chrome downloads are reconciled before
-// eligible queued work is resumed; a full browser restart requires user Resume.
-function recoverSessions() {
-  if (recoveryPromise) return recoveryPromise;
-  recoveryPromise = (async () => {
-    await loadSessions();
-    await loadDownloadMap();
-    for (const id of Object.keys(sessions)) {
-      if (browserRestart && sessions[id].hasStarted) sessions[id].paused = true;
-      await reconcileSessionForTab(Number(id));
-    }
-    if (browserRestart) await saveSessions();
-    for (const id of Object.keys(sessions)) {
-      await pumpQueueForTab(Number(id));
-    }
-  })().catch((error) => { recoveryPromise = null; throw error; });
-  return recoveryPromise;
-}
-
-chrome.runtime.onStartup.addListener(() => {
-  browserRestart = true;
-  recoverSessions().catch(console.error);
-});
-
-async function saveSessions() {
-  await chrome.storage.local.set({ ffSessions: sessions });
-}
 
 function normalizeLink(link) {
   if (!link || typeof link.url !== "string" || !link.url.length) return null;
   const url = normalizeLandingUrl(link.url);
   if (!url) return null;
   return {
+    id: durableId(link.id),
     url,
     label: typeof link.label === "string" && link.label.length ? link.label : link.url
   };
@@ -146,6 +181,7 @@ function normalizeLink(link) {
 
 function toQueuedItem(link) {
   return {
+    id: durableId(link.id),
     url: link.url,
     label: link.label || link.url,
     state: "queued",
@@ -157,18 +193,21 @@ function normalizeSessionItem(item) {
   const link = normalizeLink(item);
   if (!link) return null;
   return {
+    id: link.id,
     url: link.url,
     label: link.label,
     state: typeof item?.state === "string" ? item.state : "queued",
     error: typeof item?.error === "string" ? item.error : "",
-    downloadId: Number.isInteger(item?.downloadId) ? item.downloadId : null
+    downloadId: Number.isInteger(item?.downloadId) && item.downloadId >= 0 ? item.downloadId : null
   };
 }
 
 function normalizeSessionShape(session) {
   if (!session || typeof session !== "object") {
     return {
-      tabId: null,
+      id: crypto.randomUUID(),
+      sourceTabId: null,
+      sourceAttached: false,
       sourceUrl: "",
       title: "",
       hasStarted: false,
@@ -183,15 +222,31 @@ function normalizeSessionShape(session) {
     ? session.items.map(normalizeSessionItem).filter(Boolean)
     : [];
 
+  const usedItemIds = new Set();
+  for (const item of normalizedItems) {
+    if (usedItemIds.has(item.id)) item.id = crypto.randomUUID();
+    usedItemIds.add(item.id);
+  }
   const rawAllItems = Array.isArray(session.allItems) ? session.allItems : [];
-  const normalizedAllItems = rawAllItems.map(normalizeLink).filter(Boolean);
+  const normalizedAllItems = rawAllItems.map(link => {
+    const existing = normalizedItems.find(item => item.url === normalizeLandingUrl(link?.url));
+    return normalizeLink({ ...link, id: link?.id || existing?.id });
+  }).filter(Boolean);
+  const usedLinkIds = new Set();
+  for (const link of normalizedAllItems) {
+    if (usedLinkIds.has(link.id)) link.id = crypto.randomUUID();
+    usedLinkIds.add(link.id);
+  }
   const allItems =
     normalizedAllItems.length > 0
       ? normalizedAllItems
-      : normalizedItems.map((item) => ({ url: item.url, label: item.label }));
+      : normalizedItems.map((item) => ({ id: item.id, url: item.url, label: item.label }));
 
   return {
-    ...session,
+    id: durableId(session.id),
+    sourceTabId: Number.isInteger(session.sourceTabId) ? session.sourceTabId : null,
+    sourceAttached: session.sourceAttached !== false && session.sourceClosed !== true,
+    sourceClosed: session.sourceClosed === true,
     sourceUrl: typeof session.sourceUrl === "string" ? session.sourceUrl : "",
     title: typeof session.title === "string" ? session.title : "",
     hasStarted: session.hasStarted === true,
@@ -225,56 +280,18 @@ function normalizeSessionUrl(url) {
   }
 }
 
-function shouldReuseSessionForTab(session, tab) {
-  if (!session) return false;
-
-  const activeRun = hasActiveItems(session);
-  const samePage =
-    normalizeSessionUrl(session.sourceUrl) === normalizeSessionUrl(tab?.url);
-
-  if (activeRun) {
-    // While work is actively queued/running, preserve tab-scoped batch state
-    // even if the user navigates within the tab.
-    return true;
-  }
-
-  // Reopening a popup must preserve selection or terminal results on the same
-  // page. A new batch is started explicitly, not by discarding its history.
-  if (samePage) {
-    return true;
-  }
-
-  // Terminal or cancelled runs should not linger across page changes.
-  return false;
+function isSessionGenerationCurrent(batchId, generation) {
+  return !!sessions[batchId] && getSessionGeneration(sessions[batchId]) === generation;
 }
-
-function isSessionGenerationCurrent(tabId, generation) {
-  const session = sessions[tabId];
-  if (!session) return false;
-  return getSessionGeneration(session) === generation;
+function getSessionItemForRun(batchId, itemId, generation) {
+  if (!isSessionGenerationCurrent(batchId, generation)) return null;
+  return sessions[batchId].items.find(item => item.id === itemId) || null;
 }
-
-function getSessionItemForRun(tabId, index, generation) {
-  if (!isSessionGenerationCurrent(tabId, generation)) return null;
-  const session = sessions[tabId];
-  if (!session || !Array.isArray(session.items) || !session.items[index]) {
-    return null;
-  }
-  return session.items[index];
-}
-
 function createSessionFromExtractedLinks(tab, title, links, generation) {
   const allItems = Array.isArray(links) ? links.map(normalizeLink).filter(Boolean) : [];
-  return normalizeSessionShape({
-    tabId: tab.id,
-    sourceUrl: tab.url,
-    title: title || "",
-    hasStarted: false,
-    paused: false,
-    generation,
-    allItems,
-    items: allItems.map(toQueuedItem)
-  });
+  return normalizeSessionShape({ id: crypto.randomUUID(), sourceTabId: tab.id,
+    sourceUrl: tab.url, sourceAttached: true, title: title || "", hasStarted: false,
+    paused: false, generation, allItems, items: allItems.map(toQueuedItem) });
 }
 
 function searchDownloadById(downloadId) {
@@ -289,11 +306,11 @@ function searchDownloadById(downloadId) {
   });
 }
 
-async function reconcileSessionForTab(tabId) {
+async function reconcileBatch(batchId) {
   await loadSessions();
   await loadDownloadMap();
 
-  const existing = sessions[tabId];
+  const existing = sessions[batchId];
   if (!existing) return;
 
   const session = normalizeSessionShape(existing);
@@ -305,7 +322,7 @@ async function reconcileSessionForTab(tabId) {
 
     if (item.downloadId == null) {
       if (item.state === "starting") {
-        if (!activeResolvers.has(resolverKey(tabId, i, getSessionGeneration(session)))) {
+        if (!activeResolvers.has(resolverKey(batchId, item.id, getSessionGeneration(session)))) {
           item.state = "queued";
           sessionsChanged = true;
         }
@@ -360,11 +377,11 @@ async function reconcileSessionForTab(tabId) {
     const generation = getSessionGeneration(session);
     if (
       !existingKey ||
-      existingKey.tabId !== tabId ||
-      existingKey.index !== i ||
+      existingKey.batchId !== batchId ||
+      existingKey.itemId !== item.id ||
       existingKey.generation !== generation
     ) {
-      downloadIdToKey.set(downloadId, { tabId, index: i, generation });
+      downloadIdToKey.set(downloadId, { batchId, itemId: item.id, generation });
       mapChanged = true;
     }
   }
@@ -375,8 +392,8 @@ async function reconcileSessionForTab(tabId) {
   }
 
   if (sessionsChanged) {
-    sessions[tabId] = session;
-    broadcastSessionUpdate(tabId);
+    sessions[batchId] = session;
+    broadcastSessionUpdate(batchId);
   }
 
   if (sessionsChanged || mapChanged) {
@@ -387,28 +404,26 @@ async function reconcileSessionForTab(tabId) {
   }
 }
 
+function findSessionForTab(tab) {
+  return Object.values(sessions).find(batch => batch.sourceAttached && !batch.sourceClosed &&
+    batch.sourceTabId === tab?.id && normalizeSessionUrl(batch.sourceUrl) === normalizeSessionUrl(tab.url));
+}
 async function rebuildSessionForTab(tab, generation) {
   const { title, items } = await extractFuckingFastLinks(tab.id);
   const rebuilt = createSessionFromExtractedLinks(tab, title, items, generation);
-  sessions[tab.id] = rebuilt;
+  for (const batch of Object.values(sessions)) {
+    if (batch.sourceTabId === tab.id) batch.sourceAttached = false;
+  }
+  sessions[rebuilt.id] = rebuilt;
   await saveSessions();
   return rebuilt;
 }
-
-function broadcastSessionUpdate(tabId) {
-  // In MV3, sendMessage may reject with "Receiving end does not exist"
-  // when no views (popup, etc.) are open. We explicitly ignore that.
-  const session = sessions[tabId];
+function broadcastSessionUpdate(batchId) {
+  const session = sessions[batchId];
   if (!session) return;
   try {
-    chrome.runtime.sendMessage({ type: "session_updated", tabId, session }, () => {
-      // Accessing lastError clears it and prevents "Uncaught (in promise)" noise
-      // when there is no receiver (e.g. popup closed).
-      void chrome.runtime.lastError;
-    });
-  } catch (e) {
-    // Ignore synchronous errors as well (very rare)
-  }
+    chrome.runtime.sendMessage({ type: "session_updated", batchId, session }, () => { void chrome.runtime.lastError; });
+  } catch { /* The popup can close before the update arrives. */ }
 }
 
 /**
@@ -591,41 +606,31 @@ function startDownload(dlUrl) {
  */
 async function ensureSessionForTab(tab) {
   if (!isSupportedSource(tab?.url)) throw new Error("Please open an HTTPS FitGirl repack page first.");
-  await loadSessions();
-  await reconcileSessionForTab(tab.id);
-
-  const existing = sessions[tab.id];
-  let session = existing ? normalizeSessionShape(existing) : null;
-  if (session) {
-    sessions[tab.id] = session;
-    if (shouldReuseSessionForTab(session, tab)) {
-      return session;
-    }
-  }
-
-  const nextGeneration = session ? getSessionGeneration(session) + 1 : 0;
-  return rebuildSessionForTab(tab, nextGeneration);
+  await loadState();
+  const existing = findSessionForTab(tab);
+  if (existing) { await reconcileBatch(existing.id); return sessions[existing.id]; }
+  return rebuildSessionForTab(tab, 0);
 }
 
 /**
- * Pump the queue for a specific FitGirl URL: start new downloads
+ * Pump a durable batch queue: start new downloads
  * up to the concurrency limit. Called when a batch starts and whenever
  * a download for that URL completes.
  */
-async function pumpQueueForTab(tabId, expectedGeneration) {
+async function pumpQueueForBatch(batchId, expectedGeneration) {
   await loadSessions();
   const { concurrency } = await getCurrentSettings();
   await loadDownloadMap();
   // Read current state after all awaits, then reserve slots synchronously.
-  const existingSession = sessions[tabId];
+  const existingSession = sessions[batchId];
   if (!existingSession) return;
   const session = normalizeSessionShape(existingSession);
-  sessions[tabId] = session;
+  sessions[batchId] = session;
   if (!session.hasStarted || !Array.isArray(session.items) || !session.items.length) return;
 
   const runGeneration =
     expectedGeneration == null ? getSessionGeneration(session) : expectedGeneration;
-  if (!isSessionGenerationCurrent(tabId, runGeneration)) return;
+  if (!isSessionGenerationCurrent(batchId, runGeneration)) return;
 
   const maxConcurrent = clampConcurrency(concurrency);
 
@@ -639,39 +644,39 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
   if (availableSlots <= 0) return;
 
   for (let i = 0; i < session.items.length && availableSlots > 0; i++) {
-    const item = getSessionItemForRun(tabId, i, runGeneration);
+    const item = getSessionItemForRun(batchId, session.items[i].id, runGeneration);
     if (!item) continue;
     if (item.state !== "queued") continue;
 
     availableSlots--;
     item.state = "starting";
     item.error = "";
-    const ownershipKey = resolverKey(tabId, i, runGeneration);
+    const ownershipKey = resolverKey(batchId, item.id, runGeneration);
     activeResolvers.add(ownershipKey);
 
-    (async (index, generation) => {
+    (async (itemId, generation) => {
       try {
-        const activeItemBeforeFetch = getSessionItemForRun(tabId, index, generation);
+        const activeItemBeforeFetch = getSessionItemForRun(batchId, itemId, generation);
         if (!activeItemBeforeFetch || activeItemBeforeFetch.state !== "starting") {
           return;
         }
 
         const dlUrl = await getDirectDownloadUrl(activeItemBeforeFetch.url);
 
-        const activeItemBeforeDownload = getSessionItemForRun(tabId, index, generation);
+        const activeItemBeforeDownload = getSessionItemForRun(batchId, itemId, generation);
         if (!activeItemBeforeDownload || activeItemBeforeDownload.state !== "starting") {
           return;
         }
 
-        if (sessions[tabId].paused) {
+        if (sessions[batchId].paused) {
           activeItemBeforeDownload.state = "queued";
           await saveSessions();
-          broadcastSessionUpdate(tabId);
+          broadcastSessionUpdate(batchId);
           return;
         }
         const downloadId = await startDownload(dlUrl);
 
-        const activeItemAfterDownload = getSessionItemForRun(tabId, index, generation);
+        const activeItemAfterDownload = getSessionItemForRun(batchId, itemId, generation);
         if (!activeItemAfterDownload || activeItemAfterDownload.state !== "starting") {
           try {
             chrome.downloads.cancel(downloadId);
@@ -683,500 +688,186 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
 
         activeItemAfterDownload.downloadId = downloadId;
         activeItemAfterDownload.state = "downloading";
-        downloadIdToKey.set(downloadId, { tabId, index, generation });
+        downloadIdToKey.set(downloadId, { batchId, itemId, generation });
         // Pause may arrive while Chrome is creating the download.
-        if (sessions[tabId].paused) {
+        if (sessions[batchId].paused) {
           await chrome.downloads.pause(downloadId);
-          const current = getSessionItemForRun(tabId, index, generation);
+          const current = getSessionItemForRun(batchId, itemId, generation);
           if (current) current.state = "paused";
         }
         await Promise.all([saveSessions(), saveDownloadMap()]);
-        broadcastSessionUpdate(tabId);
+        broadcastSessionUpdate(batchId);
       } catch (err) {
-        const activeItemOnError = getSessionItemForRun(tabId, index, generation);
+        const activeItemOnError = getSessionItemForRun(batchId, itemId, generation);
         if (!activeItemOnError) return;
         console.warn("Failed to start FuckingFast URL:", activeItemOnError.url, err);
         activeItemOnError.state = err.code === "HOST_VERIFICATION" ? "queued" : "error";
-        if (err.code === "HOST_VERIFICATION") sessions[tabId].paused = true;
+        if (err.code === "HOST_VERIFICATION") sessions[batchId].paused = true;
         activeItemOnError.error = err.message || String(err);
         activeItemOnError.downloadId = null;
         await saveSessions();
-        broadcastSessionUpdate(tabId);
-        pumpQueueForTab(tabId, generation);
+        broadcastSessionUpdate(batchId);
+        pumpQueueForBatch(batchId, generation);
       } finally {
         activeResolvers.delete(ownershipKey);
       }
-    })(i, runGeneration);
+    })(item.id, runGeneration);
   }
 }
 
-// Track completion of underlying Chrome downloads
-chrome.downloads.onChanged.addListener((delta) => {
-  if (!delta.state || !delta.state.current) return;
-
-  const state = delta.state.current;
+// Completion follows durable file identity, including after queue reordering.
+chrome.downloads.onChanged.addListener(delta => {
+  const state = delta.state?.current;
   if (state !== "complete" && state !== "interrupted") return;
-
   (async () => {
-    await loadDownloadMap();
+    await loadState();
     let key = downloadIdToKey.get(delta.id);
     if (!key) return;
-    await loadSessions();
-    const owner = sessions[key.tabId];
-    if (!owner?.items?.[key.index] || getSessionGeneration(owner) !== key.generation) {
-      downloadIdToKey.delete(delta.id);
-      await saveDownloadMap();
-      return;
+    let item = getSessionItemForRun(key.batchId, key.itemId, key.generation);
+    if (!item || item.downloadId !== delta.id) {
+      downloadIdToKey.delete(delta.id); await saveSessions(); return;
     }
     await recoverSessions();
     key = downloadIdToKey.get(delta.id);
     if (!key) return;
-
-    await loadSessions();
-    const existingSession = sessions[key.tabId];
-    if (!existingSession) {
-      downloadIdToKey.delete(delta.id);
-      await saveDownloadMap();
-      return;
-    }
-    const session = normalizeSessionShape(existingSession);
-    sessions[key.tabId] = session;
-    if (!isSessionGenerationCurrent(key.tabId, key.generation)) {
-      downloadIdToKey.delete(delta.id);
-      await saveDownloadMap();
-      return;
-    }
-    if (!session || !session.items || !session.items[key.index]) {
-      downloadIdToKey.delete(delta.id);
-      await saveDownloadMap();
-      return;
-    }
-
-    const item = session.items[key.index];
+    item = getSessionItemForRun(key.batchId, key.itemId, key.generation);
+    if (!item || item.downloadId !== delta.id) return;
     downloadIdToKey.delete(delta.id);
     item.downloadId = null;
-    if (state === "complete") {
-      item.state = "completed";
-    } else {
-      item.state = delta.error?.current === "USER_CANCELED" ? "cancelled" : "error";
-    }
-    await Promise.all([saveSessions(), saveDownloadMap()]);
-    broadcastSessionUpdate(key.tabId);
-    // Try to start the next queued download
-    pumpQueueForTab(key.tabId, key.generation);
-  })();
+    item.state = state === "complete" ? "completed" : delta.error?.current === "USER_CANCELED" ? "cancelled" : "error";
+    await saveSessions(); broadcastSessionUpdate(key.batchId);
+    await pumpQueueForBatch(key.batchId, key.generation);
+  })().catch(console.error);
 });
-
-// Closing a source page must not abandon an already-started batch. Its owner
-// key remains stable for in-flight resolvers and download completion events.
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener(sourceTabId => {
   (async () => {
-    await loadSessions();
-    if (sessions[tabId]?.hasStarted) {
-      sessions[tabId].sourceClosed = true;
-      await saveSessions();
-      broadcastSessionUpdate(tabId);
-      return;
+    await loadState();
+    for (const batch of Object.values(sessions)) {
+      if (batch.sourceTabId !== sourceTabId || !batch.sourceAttached) continue;
+      batch.sourceClosed = true; batch.sourceAttached = false;
+      if (!batch.hasStarted) delete sessions[batch.id];
+      broadcastSessionUpdate(batch.id);
     }
-    if (sessions[tabId]) {
-      delete sessions[tabId];
-      await saveSessions();
-    }
-
-    await loadDownloadMap();
-    let changed = false;
-    for (const [downloadId, key] of Array.from(downloadIdToKey.entries())) {
-      if (key.tabId === tabId) {
-        downloadIdToKey.delete(downloadId);
-        changed = true;
-      }
-    }
-    if (changed) {
-      await saveDownloadMap();
-    }
-  })();
+    await saveSessions();
+  })().catch(console.error);
 });
-
 function getBatchSummaries() {
-  return Object.entries(sessions)
-    .filter(([, session]) => session.hasStarted)
-    .map(([id, session]) => ({
-      tabId: Number(id), title: session.title || session.sourceUrl || `Batch ${id}`,
-      sourceClosed: session.sourceClosed === true
-    }));
+  return Object.values(sessions).filter(batch => batch.hasStarted).map(batch => ({
+    batchId: batch.id, title: batch.title || batch.sourceUrl || "Saved batch", sourceClosed: batch.sourceClosed
+  }));
 }
-
-async function getControlTab(message) {
-  if (message.tabId != null) {
-    if (!Number.isInteger(message.tabId) || !sessions[message.tabId]) {
-      throw new Error("This batch is no longer available.");
-    }
-    const session = sessions[message.tabId];
-    if (!session.sourceClosed) {
-      try { return await chrome.tabs.get(message.tabId); }
-      catch { /* The source can close before its removal event is processed. */ }
-    }
-    return { id: message.tabId, url: session.sourceUrl, detached: true };
-  }
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab;
+async function activeTab() { return (await chrome.tabs.query({ active: true, currentWindow: true }))[0]; }
+function requireBatch(batchId) {
+  if (!validId(batchId) || !Object.hasOwn(sessions, batchId)) throw new Error("This batch is no longer available.");
+  return sessions[batchId];
 }
+async function controlBatch(message) {
+  if (message.batchId != null) return requireBatch(message.batchId);
+  const tab = await activeTab();
+  const batch = tab && findSessionForTab(tab);
+  if (!batch) throw new Error("No active batch found. Select a saved batch first.");
+  return batch;
+}
+async function sourceTabForBatch(batch) {
+  if (!batch.sourceAttached || batch.sourceClosed || !Number.isInteger(batch.sourceTabId)) return null;
+  try {
+    const tab = await chrome.tabs.get(batch.sourceTabId);
+    return normalizeSessionUrl(tab.url) === normalizeSessionUrl(batch.sourceUrl) ? tab : null;
+  } catch { return null; }
+}
+function scanResponse(session) { return { ok: true, session, batchId: session.id, batches: getBatchSummaries() }; }
 
-// Message-based API for popup UIs
+
+// Message-based API: opaque batch/file IDs are the only ownership selectors.
+const MESSAGE_TYPES = new Set(["scan_current_tab", "start_downloads", "get_settings", "save_settings",
+  "get_session", "cancel_downloads", "pause_downloads", "resume_downloads", "retry_failed"]);
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || typeof message.type !== "string") {
-    return;
-  }
-
-  if (message.type === "scan_current_tab") {
-    (async () => {
-      try {
-        await recoverSessions();
-        if (message.refresh === true) {
-          const target = await getControlTab(message);
-          if (!target || target.detached || !isSupportedSource(target.url)) {
-            throw new Error("Open the original HTTPS FitGirl page to scan again.");
-          }
-          if (hasActiveItems(sessions[target.id])) {
-            throw new Error("Finish or cancel the current batch before scanning again.");
-          }
-          const generation = getSessionGeneration(sessions[target.id]) + 1;
-          const session = await rebuildSessionForTab(target, generation);
-          sendResponse({ ok: true, session, tabId: target.id, batches: getBatchSummaries() });
-          return;
-        }
-        if (message.tabId != null) {
-          const selected = await getControlTab(message);
-          await reconcileSessionForTab(selected.id);
-          sendResponse({ ok: true, session: sessions[selected.id], tabId: selected.id, batches: getBatchSummaries() });
-          return;
-        }
-        const [tab] = await chrome.tabs.query({
-          active: true,
-          currentWindow: true
-        });
-
-        if (!tab || !tab.id || !isSupportedSource(tab.url)) {
-          const [available] = getBatchSummaries();
-          if (available) {
-            await reconcileSessionForTab(available.tabId);
-            sendResponse({ ok: true, session: sessions[available.tabId], tabId: available.tabId, batches: getBatchSummaries() });
-            return;
-          }
-          sendResponse({
-            ok: false,
-            error: "Please open a FitGirl repack page first."
-          });
-          return;
-        }
-
-        const sess = await ensureSessionForTab(tab);
-        sendResponse({ ok: true, session: sess, tabId: tab.id, batches: getBatchSummaries() });
-      } catch (err) {
-        console.error("scan_current_tab failed:", err);
-        sendResponse({ ok: false, error: err.message || String(err) });
+  if (!message || !MESSAGE_TYPES.has(message.type)) return;
+  (async () => {
+    await loadState();
+    if (message.tabId != null) throw new Error("Refresh the extension popup to use durable batch IDs.");
+    if (message.type === "scan_current_tab") {
+      await recoverSessions();
+      if (message.refresh === true) {
+        const selected = message.batchId != null ? requireBatch(message.batchId) : null;
+        const tab = selected ? await sourceTabForBatch(selected) : await activeTab();
+        if (!tab || !isSupportedSource(tab.url)) throw new Error("Open the original HTTPS FitGirl page to scan again.");
+        const current = selected || findSessionForTab(tab);
+        if (hasActiveItems(current)) throw new Error("Finish or cancel the current batch before scanning again.");
+        return scanResponse(await rebuildSessionForTab(tab, getSessionGeneration(current) + 1));
       }
-    })();
-    return true; // keep channel open for async response
-  }
-
-  if (message.type === "start_downloads") {
-    (async () => {
-      try {
-        await loadSessions();
-        const [tab] = await chrome.tabs.query({
-          active: true,
-          currentWindow: true
-        });
-
-        if (!tab || !tab.url) {
-          sendResponse({
-            ok: false,
-            error: "No active FitGirl tab found."
-          });
-          return;
-        }
-
-        const tabId = tab.id;
-        const session = normalizeSessionShape(await ensureSessionForTab(tab));
-        sessions[tabId] = session;
-
-        if (hasActiveItems(session)) {
-          throw new Error("A batch is already running. Cancel it before starting another.");
-        }
-
-        const selectedUrls = new Set(
-          (message.items || [])
-            .map((i) => i.url)
-            .filter((u) => typeof u === "string" && u.length)
-        );
-
-        if (!selectedUrls.size) {
-          sendResponse({
-            ok: false,
-            error: "No files selected for download."
-          });
-          return;
-        }
-
-        const candidateLinks =
-          Array.isArray(session.allItems) && session.allItems.length
-            ? session.allItems
-            : (session.items || []).map((item) => ({
-                url: item.url,
-                label: item.label || item.url
-              }));
-
-        const selectedItems = candidateLinks
-          .filter((item) => selectedUrls.has(item.url))
-          .map(toQueuedItem);
-
-        if (!selectedItems.length) {
-          sendResponse({
-            ok: false,
-            error: "Selected files were not found in the current page scan."
-          });
-          return;
-        }
-
-        // Start a new run generation to invalidate any stale async workers.
-        session.generation = getSessionGeneration(session) + 1;
-        const runGeneration = session.generation;
-        session.items = selectedItems;
-        session.hasStarted = true;
-        session.paused = false;
-
-        // Clear mapping entries for this tab
-        await loadDownloadMap();
-        for (const [downloadId, key] of Array.from(downloadIdToKey.entries())) {
-          if (key.tabId === tabId) {
-            downloadIdToKey.delete(downloadId);
-          }
-        }
-        sessions[tabId] = session;
-        await Promise.all([saveSessions(), saveDownloadMap()]);
-        broadcastSessionUpdate(tabId);
-
-        // Start the queue pump for this tab (will respect concurrency limit)
-        pumpQueueForTab(tabId, runGeneration);
-
-        sendResponse({ ok: true });
-      } catch (err) {
-        console.error("start_downloads failed:", err);
-        sendResponse({ ok: false, error: err.message || String(err) });
+      if (message.batchId != null) {
+        const batch = requireBatch(message.batchId);
+        await reconcileBatch(batch.id); return scanResponse(sessions[batch.id]);
       }
-    })();
-    return true;
-  }
-
-  if (message.type === "get_settings") {
-    (async () => {
-      try {
-        await recoverSessions();
-        const current = await getCurrentSettings();
-        sendResponse({ ok: true, settings: current });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message || String(err) });
+      const tab = await activeTab();
+      if (isSupportedSource(tab?.url)) return scanResponse(await ensureSessionForTab(tab));
+      const [saved] = getBatchSummaries();
+      if (!saved) throw new Error("Please open a FitGirl repack page first.");
+      await reconcileBatch(saved.batchId); return scanResponse(sessions[saved.batchId]);
+    }
+    if (message.type === "get_settings") {
+      await recoverSessions(); return { ok: true, settings: await getCurrentSettings() };
+    }
+    if (message.type === "get_session") { await recoverSessions(); return { ok: true, sessions }; }
+    if (message.type === "save_settings") {
+      const concurrency = clampConcurrency(message.settings?.concurrency);
+      await new Promise((resolve, reject) => chrome.storage.sync.set({ concurrency }, () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message)); else resolve();
+      }));
+      for (const id of Object.keys(sessions)) pumpQueueForBatch(id).catch(console.error);
+      return { ok: true, settings: { concurrency } };
+    }
+    if (message.type === "start_downloads") {
+      const session = message.batchId != null ? requireBatch(message.batchId) : await ensureSessionForTab(await activeTab());
+      if (hasActiveItems(session)) throw new Error("A batch is already running. Cancel it before starting another.");
+      const selectedIds = new Set(Array.isArray(message.items) ? message.items.map(item => item?.id).filter(validId) : []);
+      if (!selectedIds.size) throw new Error("No files selected for download.");
+      const selected = session.allItems.filter(item => selectedIds.has(item.id)).map(toQueuedItem);
+      if (!selected.length) throw new Error("Selected files were not found in the current page scan.");
+      session.generation++;
+      session.items = selected; session.hasStarted = true; session.paused = false;
+      for (const [id, key] of downloadIdToKey) if (key.batchId === session.id) downloadIdToKey.delete(id);
+      await saveSessions(); broadcastSessionUpdate(session.id);
+      pumpQueueForBatch(session.id, session.generation).catch(console.error);
+      return { ok: true };
+    }
+    const session = await controlBatch(message);
+    if (message.type === "cancel_downloads") {
+      session.generation++; session.hasStarted = false; session.paused = false;
+      for (const item of session.items) {
+        if (item.downloadId != null) {
+          chrome.downloads.cancel(item.downloadId).catch(console.error);
+          downloadIdToKey.delete(item.downloadId); item.downloadId = null;
+        }
+        if (ACTIVE_ITEM_STATES.has(item.state)) item.state = "cancelled";
       }
-    })();
-    return true;
-  }
-
-  if (message.type === "save_settings") {
-    const newConcurrency = clampConcurrency(message?.settings?.concurrency);
-    chrome.storage.sync.set(
-      { concurrency: newConcurrency },
-      () => {
-        if (chrome.runtime.lastError) {
-          sendResponse({
-            ok: false,
-            error: chrome.runtime.lastError.message
-          });
-        } else {
-          sendResponse({
-            ok: true,
-            settings: { concurrency: newConcurrency }
-          });
-          for (const tabId of Object.keys(sessions)) {
-            pumpQueueForTab(Number(tabId)).catch(console.error);
-          }
-        }
+      await saveSessions(); broadcastSessionUpdate(session.id);
+      const tab = await sourceTabForBatch(session);
+      if (tab && isSupportedSource(tab.url)) await rebuildSessionForTab(tab, session.generation);
+      return { ok: true };
+    }
+    if (message.type === "pause_downloads" || message.type === "resume_downloads") {
+      const pause = message.type === "pause_downloads";
+      session.paused = pause;
+      for (const item of session.items) {
+        if (item.downloadId == null) continue;
+        if (pause && item.state === "downloading") { await chrome.downloads.pause(item.downloadId); item.state = "paused"; }
+        if (!pause && item.state === "paused") { await chrome.downloads.resume(item.downloadId); item.state = "downloading"; }
       }
-    );
-    return true;
-  }
-
-  if (message.type === "get_session") {
-    (async () => {
-      try {
-        await recoverSessions();
-        sendResponse({ ok: true, sessions });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message || String(err) });
-      }
-    })();
-    return true;
-  }
-
-  if (message.type === "cancel_downloads") {
-    (async () => {
-      try {
-        await loadSessions();
-        const tab = await getControlTab(message);
-        if (!tab || !tab.url) {
-          sendResponse({
-            ok: false,
-            error: "No active FitGirl tab found."
-          });
-          return;
-        }
-        const tabId = tab.id;
-        const existingSession = sessions[tabId];
-        if (!existingSession) {
-          sendResponse({ ok: true });
-          return;
-        }
-        const session = normalizeSessionShape(existingSession);
-
-        // Invalidate current run first so in-flight workers stop mutating state.
-        session.generation = getSessionGeneration(session) + 1;
-        session.hasStarted = false;
-        session.paused = false;
-
-        // Cancel all active and queued downloads
-        await loadDownloadMap();
-        for (let i = 0; i < session.items.length; i++) {
-          const item = session.items[i];
-          if (item.downloadId != null) {
-            try {
-              chrome.downloads.cancel(item.downloadId);
-            } catch (e) {
-              // ignore
-            }
-            downloadIdToKey.delete(item.downloadId);
-            item.downloadId = null;
-          }
-          if (ACTIVE_ITEM_STATES.has(item.state)) {
-            item.state = "cancelled";
-          }
-        }
-        sessions[tabId] = session;
-        await Promise.all([saveSessions(), saveDownloadMap()]);
-
-        // Rebuild immediately for the current page so popup opens into fresh
-        // detection state without requiring a manual reset action.
-        if (!tab.detached && isSupportedSource(tab.url)) {
-          const refreshed = await rebuildSessionForTab(tab, session.generation);
-          sessions[tabId] = refreshed;
-        }
-
-        broadcastSessionUpdate(tabId);
-        sendResponse({ ok: true });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message || String(err) });
-      }
-    })();
-    return true;
-  }
-
-  if (message.type === "pause_downloads" || message.type === "resume_downloads") {
-    (async () => {
-      try {
-        await loadSessions();
-        const tab = await getControlTab(message);
-        if (!tab || !tab.url) {
-          sendResponse({
-            ok: false,
-            error: "No active FitGirl tab found."
-          });
-          return;
-        }
-        const tabId = tab.id;
-        const existingSession = sessions[tabId];
-        if (!existingSession) {
-          sendResponse({ ok: true });
-          return;
-        }
-        const session = normalizeSessionShape(existingSession);
-
-        const shouldPause = message.type === "pause_downloads";
-        session.paused = shouldPause;
-
-        for (let i = 0; i < session.items.length; i++) {
-          const item = session.items[i];
-          if (item.downloadId == null) continue;
-
-          try {
-            if (shouldPause && item.state === "downloading") {
-              chrome.downloads.pause(item.downloadId);
-              item.state = "paused";
-            } else if (!shouldPause && item.state === "paused") {
-              chrome.downloads.resume(item.downloadId);
-              item.state = "downloading";
-            }
-          } catch (e) {
-            // ignore
-          }
-        }
-
-        sessions[tabId] = session;
-        await saveSessions();
-        broadcastSessionUpdate(tabId);
-
-        if (!shouldPause) {
-          pumpQueueForTab(tabId);
-        }
-
-        sendResponse({ ok: true });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message || String(err) });
-      }
-    })();
-    return true;
-  }
-
-  if (message.type === "retry_failed") {
-    (async () => {
-      try {
-        await loadSessions();
-        const tab = await getControlTab(message);
-        if (!tab || !tab.url) {
-          sendResponse({ ok: false, error: "No active FitGirl tab found." });
-          return;
-        }
-        const tabId = tab.id;
-        const existingSession = sessions[tabId];
-        if (!existingSession) {
-          sendResponse({ ok: true });
-          return;
-        }
-        const session = normalizeSessionShape(existingSession);
-
-        let requeued = 0;
-        for (const item of session.items) {
-          if (item.state === "error") {
-            item.state = "queued";
-            item.downloadId = null;
-            requeued++;
-          }
-        }
-
-        if (requeued > 0) {
-          session.generation = getSessionGeneration(session) + 1;
-          const runGeneration = session.generation;
-          session.hasStarted = true;
-          session.paused = false;
-          sessions[tabId] = session;
-          await saveSessions();
-          broadcastSessionUpdate(tabId);
-          pumpQueueForTab(tabId, runGeneration);
-        }
-
-        sendResponse({ ok: true });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message || String(err) });
-      }
-    })();
-    return true;
-  }
+      await saveSessions(); broadcastSessionUpdate(session.id);
+      if (!pause) pumpQueueForBatch(session.id).catch(console.error);
+      return { ok: true };
+    }
+    if (hasActiveItems(session)) throw new Error("Wait for active work to finish before retrying failed files.");
+    const failed = session.items.filter(item => item.state === "error");
+    if (failed.length) {
+      for (const item of failed) { item.state = "queued"; item.downloadId = null; }
+      session.generation++; session.hasStarted = true; session.paused = false;
+      await saveSessions(); broadcastSessionUpdate(session.id);
+      pumpQueueForBatch(session.id, session.generation).catch(console.error);
+    }
+    return { ok: true };
+  })().then(sendResponse, error => sendResponse({ ok: false, error: error.message || String(error) }));
+  return true;
 });

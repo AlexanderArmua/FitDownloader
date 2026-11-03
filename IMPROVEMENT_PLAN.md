@@ -2,23 +2,23 @@
 
 Created: 2026-11-03 (America/Buenos_Aires).
 
-This is a trackable implementation backlog and handoff document for the user's fork. Read alongside `AGENTS.md`. The test foundation is published on its branch; REL-01 through REL-04 are implemented and validated. Remaining reliability and product work is still tracked below.
+This is a trackable implementation backlog and handoff document for the project. Read alongside `AGENTS.md`. The test foundation and REL-01 through REL-05 are implemented and validated. Remaining reliability and product work is tracked below.
 
 ## Resume checkpoint
 
 | Field | Current value |
 | --- | --- |
-| Work status | Test foundation and REL-01..04 are published on the fork's main branch. Runtime commit `ef55d70` (version 0.2.2) passed all required remote CI jobs. |
+| Work status | REL-05 implemented locally: durable batch/file ownership and safe saved-state migration. Version 0.2.3 is ready for publication after final checks. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
 | Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; superseded by published runtime commit `ef55d70`, version 0.2.2. |
-| Current implementation branch | Local `main` fast-forwarded and pushed to `origin/main`; feature branches `chore/test-foundation` and `fix/batch-recovery` also remain on origin. Create a fresh focused branch for the next task. |
-| Next task | **REL-05:** stable batch/file identities and migration away from tab/index ownership, then REL-06 full mutation/persistence serialization and REL-07 API-result handling. |
-| Latest implementation boundary | Preserve terminal results, recover orphaned resolvers, retain/control source-closed batches, and reconcile saved work on worker wake. Minimal saved-batch picker and explicit rescan enable recovery access without the larger manager UI. |
-| Next behavior work | Keep REL-05 independent of optional UI/features; reproduce tab-ID reuse and item-index changes before migrating storage/mappings. |
-| Current validation | `npm run check`: 120 passing unit/DOM tests; application coverage 88.69% lines, 82.42% branches, 98.03% functions. `npm run test:browser`: all 8 pass. Recovery subset: all 12 pass, with no skipped/expected-failure tests. |
+| Current implementation branch | `fix/stable-batch-identities`, based on main at `86516ef`; version 0.2.3. Check Git for final publication revision. |
+| Next task | **REL-06:** serialize all state mutations/persistence, followed by REL-07 consistent browser API failure/rollback handling. |
+| Latest implementation boundary | Durable batch/file IDs, versioned single-key state, preserved legacy download ownership, ID-based messages and selection. Existing resolver protocol and host permissions unchanged. |
+| Next behavior work | Reproduce out-of-order storage writes and reconciliation/control races with delayed API mocks, then add a mutation queue without deadlocking recovery or resolver completion. |
+| Current validation | `npm run check`: 140 passing unit/DOM tests. `npm run test:browser`: all 9 pass. Named recovery/identity/migration subset is passing; no skipped or expected-failure tests. Coverage remains above unchanged 85/75/95 floors; final figures recorded in work log. |
 | Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
-| Blockers | None. Windows browser tests need normal process permissions. Runtime CI passed: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41750317691 . |
-| Changed areas | Worker hydration/recovery/ownership; terminal-state retention; saved-batch targeting/selection/rescan; lifecycle and browser regressions; removal of diagnostic CI exception; version 0.2.2 and docs. |
+| Blockers | None locally. Windows browser tests need normal process permissions. Remote CI must be checked for the stable-ID branch after push. |
+| Changed areas | Durable state/migration, batch and file selectors, completion/resolver lookup, explicit source attachment, updated UI contract and regression fixtures; version 0.2.3 and docs. |
 | Publication status | User authorized pushing and continuing on 2026-11-03. Both milestones committed/pushed; own main advanced after required recovery CI passed. This documentation checkpoint records the completed publication. Existing upstream PR #2 remains unchanged; no GitHub release was created. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
@@ -155,7 +155,7 @@ Checkboxes represent completion, not merely that work was attempted. Reference t
 | [x] | REL-02 | 2 | P1 | Shared once-per-worker hydration/reconciliation resumes eligible queued work; browser startup pauses queues for explicit Resume. Concurrent recovery and saved verification pauses are tested. |
 | [x] | REL-03 | 3 | P1 | Worker-local resolver ownership distinguishes live requests from orphaned persisted `starting` jobs; tests cover both requeueing and avoiding duplicate live requests. |
 | [x] | REL-04 | 4 | P1 | Terminal results/Retry survive reopening and reconciliation; explicit Scan page again starts fresh selection only after active work finishes/cancels. Verified in unit and browser tests. |
-| [ ] | REL-05 | 5 | P1 | Stable batch/file IDs replace dependence on mutable array positions and ephemeral source-tab identity; migrations preserve existing state. |
+| [x] | REL-05 | 5 | P1 | Durable batch/file IDs route queues, messages and completion; tab/index-reuse failures fixed. Schema-2 migration preserves Chrome download IDs, stable reloads, legacy backups and failure safety. |
 | [ ] | REL-06 | 6 | P1 | Serialize mutations/persistence and share hydration promises; controlled concurrency tests prove older reads/writes cannot overwrite newer state. |
 | [ ] | REL-07 | 7 | P1 | Await pause/resume/cancel results; represent API rejection accurately and retain tracking of downloads still running. |
 | [ ] | REL-08 | 8 | P1 | Browser download-manager pause/resume/cancel/removal changes synchronize with batch state without reopening the popup. |
@@ -281,7 +281,7 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Publication completed: recovery commit `ef55d70` pushed to `origin/fix/batch-recovery`; all three required remote jobs passed at https://github.com/AlexanderArmua/FitDownloader/actions/runs/41750317691 . Fast-forwarded/pushed own `main` to that tested runtime commit. Local main and origin/main matched at publication verification. This final checkpoint is a documentation-only follow-up.
 - Next implementation task is REL-05, then REL-06/REL-07. Remaining known architectural limits include legacy tab/index ownership, the download-ID persistence window, and non-serialized mutations.
 
-### Next slice preparation — REL-05
+### REL-05 preparation (completed below)
 
 - Start from current main on a new `fix/stable-batch-identities` branch. Read the current code and rerun checks; do not assume line numbers or test counts remain unchanged.
 - First write regressions for source tab-ID reuse after browser restart, queue item reorder/filter operations, and migrating a persisted legacy download map without losing or duplicating active Chrome downloads.
@@ -289,6 +289,18 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Migrate existing `ffSessions` / `ffDownloadMap` atomically or with a recoverable schema-version protocol. Preserve paused/verification/terminal states and validate legacy data. Do not silently turn a migration into a new download run.
 - Update batch-picker values and message validation together with ownership changes. Test old storage, newly created batches, closed sources, explicit rescans, and completion events racing with migration.
 - Keep the larger persistent manager, global cap, and full mutation serialization as separate tasks. Existing shared hydration promises are only part of REL-06, not proof of complete concurrency safety.
+
+### 2026-11-03 — REL-05: durable ownership and saved-state migration
+
+- Branch `fix/stable-batch-identities`, based on main `86516ef`; extension/package/lockfile version 0.2.3. No release object created.
+- Demonstrated three regression failures before implementation: reused source-tab ID selected the old batch, reordered completion updated the wrong file, and reordering stranded a live resolver. All now pass in `tests/identities.test.cjs`.
+- Sessions use opaque batch IDs, each file has a stable ID, and download maps/resolvers use batch ID + file ID + generation. `sourceTabId` is optional metadata with explicit attachment. A new scan receives a new batch ID and retains historical results; browser startup detaches previous source bindings.
+- Replaced the separate legacy records with one schema-2 `ffBatchState` snapshot containing batches and download mappings. Migration commits before exposing state, leaves legacy keys unchanged, preserves active Chrome IDs, reconstructs partial old writes, and rejects unsupported/ambiguous snapshots without deleting data. Full concurrent mutation serialization is still REL-06.
+- Updated messages, saved-batch picker, live broadcasts and checkbox selection to use IDs. Cross-batch file selection and old numeric-tab control messages are rejected. Queue ordering no longer determines ownership.
+- The message dispatcher was consolidated to route every control through the new identity contract. Pause/resume await browser API results, but comprehensive rollback/partial-failure consistency is not claimed complete (REL-07).
+- Validation: 140 unit/DOM tests and 9 isolated Chromium tests pass, including legacy state across browser restart and old/new scans sharing source metadata. Host protocol and production permission lists were preserved. No real archive or ad page was used.
+- Coverage: 91.83% lines, 86.43% branches, 98.36% functions; thresholds were not weakened. All 31 named recovery/identity/migration regressions pass. Publication commit and remote CI results will be recorded after publication checks.
+- Next task: REL-06. Add deferred storage and reconciliation/control interleaving regressions before changing mutation scheduling; keep network operations outside critical sections. Then REL-07 and the download-ID registration-window fix REL-09.
 
 ### Future work-log entry template
 

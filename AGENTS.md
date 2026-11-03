@@ -42,6 +42,7 @@
 - TEST-01 is implemented: use the c8-based `npm run test:coverage`, not the raw Node coverage command. All application files, including unexecuted scripts, must stay in the denominator; integrity checks reject empty/missing-file reports.
 - REL-01 through REL-04 are fixed and their regression tests are required in the normal lifecycle suite. `npm run test:regressions` runs that passing recovery subset. There are no known-failure skips, TODO masks, or non-blocking CI exceptions.
 - Browser startup pauses saved queues until explicit Resume; ordinary service-worker recovery reconciles and resumes eligible work. Closed-source batches remain accessible through the popup's Saved batches picker.
+- REL-05 uses durable batch/file IDs. Sessions are keyed by batch ID; `sourceTabId` is metadata only. Messages, resolver ownership and download mappings must use batch/item IDs, never tab IDs or array positions. The `ffBatchState` schema-2 snapshot stores sessions and mappings together; legacy keys are retained unchanged during migration.
 - Tests must not depend on live file-host uptime, advertising, challenge pages, or downloading archives. Use local fixtures and tiny test downloads for browser integration tests.
 - After development commands and CI exist, use the actual repository commands and update this section if they replace the baseline.
 

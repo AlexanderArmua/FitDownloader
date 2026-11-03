@@ -161,10 +161,10 @@ test('verification pauses the batch and keeps files queued for resume', async ()
     h.requests.push({ url, options });
     return { ok: false, status: 403, text: async () => '<title>Just a moment...</title>' };
   };
-  await h.run('pumpQueueForTab(1)');
+  await h.run('pumpQueueForBatch(fixtureBatch().id)');
   await tick();
-  assert.equal(h.run('sessions[1].paused'), true);
-  assert.equal(h.run('sessions[1].items.filter(i => i.state === "queued").length'), 30);
+  assert.equal(h.run('fixtureBatch().paused'), true);
+  assert.equal(h.run('fixtureBatch().items.filter(i => i.state === "queued").length'), 30);
   assert.equal(h.requests.length, 2); // only the two slots already reserved
   assert.equal(h.downloads.length, 0);
 });
@@ -178,7 +178,7 @@ test('unknown successful POST response is explicit, rather than claiming a compl
 test('simultaneous queue pumps respect configured concurrency', async () => {
   const h = harness();
   h.seed();
-  await Promise.all([h.run('pumpQueueForTab(1)'), h.run('pumpQueueForTab(1)'), h.run('pumpQueueForTab(1)')]);
+  await Promise.all([h.run('pumpQueueForBatch(fixtureBatch().id)'), h.run('pumpQueueForBatch(fixtureBatch().id)'), h.run('pumpQueueForBatch(fixtureBatch().id)')]);
   await tick();
   assert.equal(h.downloads.length, 2);
 });
@@ -189,7 +189,7 @@ test('applying a higher parallel limit fills new slots without duplicating activ
   let concurrency = 1;
   h.chrome.storage.sync.get = async () => ({ concurrency });
   h.chrome.storage.sync.set = (settings, callback) => { concurrency = settings.concurrency; callback(); };
-  await h.run('pumpQueueForTab(1)');
+  await h.run('pumpQueueForBatch(fixtureBatch().id)');
   await tick();
   assert.equal(h.downloads.length, 1);
   await h.message({ type: 'save_settings', settings: { concurrency: 3 } });
@@ -205,12 +205,12 @@ test('pause during lookup prevents new downloads; resume processes queued work',
   h.seed(1);
   let release;
   h.context.fetch = () => new Promise(resolve => { release = resolve; });
-  await h.run('pumpQueueForTab(1)');
+  await h.run('pumpQueueForBatch(fixtureBatch().id)');
   await h.message({ type: 'pause_downloads' });
   release({ ok: true, text: async () => 'https://dl.fuckingfast.co/dl/file' });
   await tick();
   assert.equal(h.downloads.length, 0);
-  assert.equal(h.run('sessions[1].items[0].state'), 'queued');
+  assert.equal(h.run('fixtureBatch().items[0].state'), 'queued');
   h.context.fetch = async () => ({ ok: true, text: async () => 'https://dl.fuckingfast.co/dl/file' });
   await h.message({ type: 'resume_downloads' });
   await tick();
@@ -222,7 +222,7 @@ test('pause during download creation pauses the newly created download', async (
   h.seed(1);
   let created;
   h.chrome.downloads.download = (_options, callback) => { created = callback; };
-  await h.run('pumpQueueForTab(1)');
+  await h.run('pumpQueueForBatch(fixtureBatch().id)');
   await tick();
   await h.message({ type: 'pause_downloads' });
   created(42);
@@ -236,8 +236,8 @@ test('cancel during lookup prevents download creation', async () => {
   h.chrome.tabs.query = async () => [{ id: 1, url: 'https://example.com/' }];
   let release;
   h.context.fetch = () => new Promise(resolve => { release = resolve; });
-  await h.run('pumpQueueForTab(1)');
-  await h.message({ type: 'cancel_downloads' });
+  await h.run('pumpQueueForBatch(fixtureBatch().id)');
+  await h.message({ type: 'cancel_downloads', batchId: h.batchId() });
   release({ ok: true, text: async () => 'https://dl.fuckingfast.co/dl/file' });
   await tick();
   assert.equal(h.downloads.length, 0);

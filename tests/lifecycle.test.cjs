@@ -22,27 +22,27 @@ test('REL-02: a full browser restart retains queued files until explicit Resume'
   const first = harness(); first.seed(1); await first.context.saveSessions();
   const h = harness({ local: first.state.local });
   await h.emit('startup');
-  const scan = await h.message({ type: 'scan_current_tab' });
+  const scan = await h.message({ type: 'scan_current_tab', batchId: h.batchId() });
   assert.equal(scan.session.paused, true);
   assert.equal(h.downloads.length, 0);
-  await h.message({ type: 'resume_downloads', tabId: 1 }); await tick();
+  await h.message({ type: 'resume_downloads', batchId: h.batchId() }); await tick();
   assert.equal(h.downloads.length, 1);
 });
 
 test('REL-02: a saved verification pause survives worker recreation', async () => {
-  const first = harness(); first.seed(1); first.run('sessions[1].paused=true');
+  const first = harness(); first.seed(1); first.run('fixtureBatch().paused=true');
   await first.context.saveSessions();
   const h = harness({ local: first.state.local });
   await h.message({ type: 'scan_current_tab' }); await tick();
   assert.equal(h.downloads.length, 0);
-  assert.equal(h.run('sessions[1].paused'), true);
+  assert.equal(h.run('fixtureBatch().paused'), true);
 });
 
 test('REL-01: source closure preserves ownership and the queue keeps advancing', async () => {
   const h = harness(); h.seed(3);
-  await h.run('pumpQueueForTab(1)'); await tick();
+  await h.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
   await h.emit('removed', 1);
-  assert.equal(h.run('sessions[1].sourceClosed'), true);
+  assert.equal(h.run('fixtureBatch().sourceClosed'), true);
   assert.equal(h.run('downloadIdToKey.size'), 2);
   await h.emit('changed', { id: 1, state: { current: 'complete' } });
   assert.equal(h.downloads.length, 3);
@@ -50,30 +50,30 @@ test('REL-01: source closure preserves ownership and the queue keeps advancing',
 
 test('REL-01: a preserved batch is inspectable and controllable from an unrelated page', async () => {
   const h = harness(); h.seed(2);
-  await h.run('pumpQueueForTab(1)'); await tick();
+  await h.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
   await h.emit('removed', 1);
   h.state.activeTab = { id: 100, url: 'https://example.com/' };
   const scan = await h.message({ type: 'scan_current_tab' });
   assert.equal(scan.ok, true);
-  assert.equal(scan.tabId, 1);
+  assert.equal(scan.batchId, h.batchId());
   assert.equal(scan.batches[0].sourceClosed, true);
-  assert.equal((await h.message({ type: 'pause_downloads', tabId: 1 })).ok, true);
+  assert.equal((await h.message({ type: 'pause_downloads', batchId: h.batchId() })).ok, true);
   assert.deepEqual(h.paused, [1, 2]);
-  assert.equal((await h.message({ type: 'resume_downloads', tabId: 1 })).ok, true);
-  assert.equal((await h.message({ type: 'cancel_downloads', tabId: 1 })).ok, true);
+  assert.equal((await h.message({ type: 'resume_downloads', batchId: h.batchId() })).ok, true);
+  assert.equal((await h.message({ type: 'cancel_downloads', batchId: h.batchId() })).ok, true);
   assert.deepEqual(h.cancelled, [1, 2]);
 });
 
 test('saved batch selection rejects invalid or missing owner IDs', async () => {
   const h = harness();
-  for (const tabId of ['1', -99, 999]) {
-    assert.equal((await h.message({ type: 'scan_current_tab', tabId })).ok, false);
+  for (const batchId of ['missing', -99, 999]) {
+    assert.equal((await h.message({ type: 'scan_current_tab', batchId })).ok, false);
   }
 });
 
 test('an explicit rescan starts fresh selection after viewing terminal results', async () => {
-  const h = harness(); h.seed(1); h.run('sessions[1].items[0].state="completed"');
-  const result = await h.message({ type: 'scan_current_tab', tabId: 1, refresh: true });
+  const h = harness(); h.seed(1); h.run('fixtureBatch().items[0].state="completed"');
+  const result = await h.message({ type: 'scan_current_tab', batchId: h.batchId(), refresh: true });
   assert.equal(result.ok, true);
   assert.equal(result.session.hasStarted, false);
   assert.equal(result.session.generation, 1);
@@ -81,19 +81,19 @@ test('an explicit rescan starts fresh selection after viewing terminal results',
 });
 
 test('rescan cannot discard an active batch or scan an unrelated site', async () => {
-  const h = harness(); h.seed(1); h.run('sessions[1].paused=true');
-  assert.equal((await h.message({ type: 'scan_current_tab', tabId: 1, refresh: true })).ok, false);
+  const h = harness(); h.seed(1); h.run('fixtureBatch().paused=true');
+  assert.equal((await h.message({ type: 'scan_current_tab', batchId: h.batchId(), refresh: true })).ok, false);
   h.state.activeTab = { id: 999, url: 'https://example.com/' };
   assert.equal((await h.message({ type: 'scan_current_tab', refresh: true })).ok, false);
 });
 
 test('REL-03: orphaned starting work is requeued after worker recreation', async () => {
   const first = harness(); first.seed(1);
-  first.run('sessions[1].items[0].state="starting"');
+  first.run('fixtureBatch().items[0].state="starting"');
   await first.context.saveSessions();
   const h = harness({ local: first.state.local });
-  await h.context.reconcileSessionForTab(1);
-  assert.equal(h.run('sessions[1].items[0].state'), 'queued');
+  await h.reconcile();
+  assert.equal(h.run('fixtureBatch().items[0].state'), 'queued');
 });
 
 test('REL-03: scanning during a live resolver does not reset or duplicate its work', async () => {
@@ -104,10 +104,10 @@ test('REL-03: scanning during a live resolver does not reset or duplicate its wo
     await gate.promise;
     return { ok: true, text: async () => 'https://dl.fuckingfast.co/dl/test.rar' };
   };
-  await h.run('pumpQueueForTab(1)');
+  await h.run('pumpQueueForBatch(fixtureBatch().id)');
   const scan = await h.message({ type: 'scan_current_tab' });
   assert.equal(scan.session.items[0].state, 'starting');
-  await h.run('pumpQueueForTab(1)');
+  await h.run('pumpQueueForBatch(fixtureBatch().id)');
   assert.equal(lookups, 1);
   gate.resolve(); await tick();
   assert.equal(h.downloads.length, 1);
@@ -117,7 +117,7 @@ test('REL-03: scanning during a live resolver does not reset or duplicate its wo
 for (const terminal of ['error', 'completed', 'cancelled']) {
   test(`REL-04: reopening a ${terminal} batch retains its result view`, async () => {
     const h = harness(); h.seed(1);
-    h.run(`sessions[1].items[0].state=${JSON.stringify(terminal)}`);
+    h.run(`fixtureBatch().items[0].state=${JSON.stringify(terminal)}`);
     for (let i = 0; i < 2; i++) {
       const result = await h.message({ type: 'scan_current_tab' });
       assert.equal(result.session.hasStarted, true);
@@ -128,7 +128,7 @@ for (const terminal of ['error', 'completed', 'cancelled']) {
 
 test('REL-04: failed results reconcile and retain Retry after worker recreation', async () => {
   const first = harness(); first.seed(1);
-  first.run('sessions[1].items[0].downloadId=42; sessions[1].items[0].state="downloading"');
+  first.run('fixtureBatch().items[0].downloadId=42; fixtureBatch().items[0].state="downloading"');
   await first.context.saveSessions();
   const h = harness({ local: first.state.local, records: new Map([[42, { id: 42, state: 'interrupted', error: 'NETWORK_FAILED' }]]) });
   const result = await h.message({ type: 'scan_current_tab' });
@@ -148,25 +148,25 @@ test('a selected batch starts through the popup message boundary and persists ow
   assert.equal(started.ok, true);
   await tick();
   assert.equal(h.downloads.length, 1);
-  assert.equal(h.state.local.ffSessions[1].items[0].downloadId, 1);
-  assert.equal(h.state.local.ffDownloadMap[1].tabId, 1);
+  assert.equal(h.state.local.ffBatchState.batches[scan.batchId].items[0].downloadId, 1);
+  assert.equal(h.state.local.ffBatchState.downloadMap[1].batchId, scan.batchId);
 });
 
 test('completed download frees one slot and starts the next queued file', async () => {
   const h = harness({ concurrency: 1 }); h.seed(2);
-  await h.run('pumpQueueForTab(1)'); await tick();
+  await h.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
   await h.emit('changed', { id: 1, state: { current: 'complete' } });
   assert.equal(h.downloads.length, 2);
-  assert.equal(h.run('sessions[1].items[0].state'), 'completed');
-  assert.equal(h.run('sessions[1].items[1].state'), 'downloading');
+  assert.equal(h.run('fixtureBatch().items[0].state'), 'completed');
+  assert.equal(h.run('fixtureBatch().items[1].state'), 'downloading');
 });
 
 for (const [error, expected] of [['NETWORK_FAILED', 'error'], ['USER_CANCELED', 'cancelled']]) {
   test(`interruption ${error} is reflected in the queue`, async () => {
     const h = harness(); h.seed(1);
-    await h.run('pumpQueueForTab(1)'); await tick();
+    await h.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
     await h.emit('changed', { id: 1, state: { current: 'interrupted' }, error: { current: error } });
-    assert.equal(h.run('sessions[1].items[0].state'), expected);
+    assert.equal(h.run('fixtureBatch().items[0].state'), expected);
     assert.equal(h.run('downloadIdToKey.size'), 0);
   });
 }
@@ -181,7 +181,7 @@ test('untracked and non-terminal download events do not mutate the batch', async
 
 test('worker recreation can reconcile an existing browser download without restarting it', async () => {
   const first = harness(); first.seed(1);
-  await first.run('pumpQueueForTab(1)'); await tick();
+  await first.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
   const second = harness({ local: first.state.local, records: first.state.records });
   const result = await second.message({ type: 'scan_current_tab' });
   assert.equal(result.session.items[0].state, 'downloading');
@@ -197,24 +197,24 @@ for (const [record, expected] of [
 ]) {
   test(`saved download reconciles to ${expected}`, async () => {
     const h = harness(); h.seed(1);
-    h.run('sessions[1].items[0].downloadId = 42; sessions[1].items[0].state = "downloading"');
+    h.run('fixtureBatch().items[0].downloadId = 42; fixtureBatch().items[0].state = "downloading"');
     if (record) h.state.records.set(42, { id: 42, ...record });
-    await h.context.reconcileSessionForTab(1);
-    assert.equal(h.run('sessions[1].items[0].state'), expected);
+    await h.reconcile();
+    assert.equal(h.run('fixtureBatch().items[0].state'), expected);
   });
 }
 
 test('a stale generation event cannot overwrite the current batch', async () => {
   const h = harness(); h.seed(1);
-  h.run('downloadIdToKey.set(42, {tabId:1,index:0,generation:99})');
+  h.run('downloadIdToKey.set(42, {batchId:fixtureBatch().id,itemId:fixtureBatch().items[0].id,generation:99})');
   await h.emit('changed', { id: 42, state: { current: 'complete' } });
-  assert.equal(h.run('sessions[1].items[0].state'), 'queued');
+  assert.equal(h.run('fixtureBatch().items[0].state'), 'queued');
   assert.equal(h.run('downloadIdToKey.size'), 0);
 });
 
 test('pause and resume operate on tracked browser downloads', async () => {
   const h = harness(); h.seed(1);
-  await h.run('pumpQueueForTab(1)'); await tick();
+  await h.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
   assert.equal((await h.message({ type: 'pause_downloads' })).ok, true);
   assert.deepEqual(h.paused, [1]);
   assert.equal((await h.message({ type: 'resume_downloads' })).ok, true);
@@ -223,20 +223,20 @@ test('pause and resume operate on tracked browser downloads', async () => {
 
 test('cancel cancels active downloads, invalidates work, and returns a fresh selection', async () => {
   const h = harness(); h.seed(3);
-  await h.run('pumpQueueForTab(1)'); await tick();
+  await h.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
   assert.equal((await h.message({ type: 'cancel_downloads' })).ok, true);
   assert.deepEqual(h.cancelled, [1, 2]);
   assert.equal(h.run('downloadIdToKey.size'), 0);
-  assert.equal(h.run('sessions[1].hasStarted'), false);
+  assert.equal(h.run('fixtureBatch().hasStarted'), false);
 });
 
 test('retry_failed starts only failed files in a terminal batch', async () => {
   const h = harness(); h.seed(2);
-  h.run('sessions[1].items[0].state="completed"; sessions[1].items[1].state="error"');
+  h.run('fixtureBatch().items[0].state="completed"; fixtureBatch().items[1].state="error"');
   const response = await h.message({ type: 'retry_failed' }); await tick();
   assert.equal(response.ok, true);
   assert.equal(h.downloads.length, 1);
-  assert.equal(h.run('sessions[1].items[0].state'), 'completed');
+  assert.equal(h.run('fixtureBatch().items[0].state'), 'completed');
 });
 
 test('storage rejection reaches the caller rather than reporting a successful scan', async () => {
@@ -253,9 +253,9 @@ test('browser download creation errors are reported without a phantom download I
     callback(undefined);
     delete h.chrome.runtime.lastError;
   };
-  await h.run('pumpQueueForTab(1)'); await tick();
-  assert.equal(h.run('sessions[1].items[0].state'), 'error');
-  assert.equal(h.run('sessions[1].items[0].downloadId'), null);
+  await h.run('pumpQueueForBatch(fixtureBatch().id)'); await tick();
+  assert.equal(h.run('fixtureBatch().items[0].state'), 'error');
+  assert.equal(h.run('fixtureBatch().items[0].downloadId'), null);
   assert.equal(h.run('downloadIdToKey.size'), 0);
 });
 
@@ -298,7 +298,7 @@ test('Start refuses a second run while a batch has active work', async () => {
 
 test('Start refuses URLs that are not in the current page scan', async () => {
   const h = harness();
-  const response = await h.message({ type: 'start_downloads', items: [{ url: 'https://fuckingfast.co/other' }] });
+  const response = await h.message({ type: 'start_downloads', items: [{ id: 'foreign-file', url: 'https://fuckingfast.co/other' }] });
   assert.equal(response.ok, false);
   assert.match(response.error, /not found/);
   assert.equal(h.downloads.length, 0);
@@ -315,7 +315,7 @@ test('download events clean up mappings for absent sessions and indexes', async 
   for (const index of [0, 99]) {
     const h = harness();
     if (index === 99) h.seed(1);
-    h.run(`downloadMapLoaded=true; downloadIdToKey.set(42,{tabId:1,index:${index},generation:0})`);
+    h.run(`downloadMapLoaded=true; downloadIdToKey.set(42,{batchId:fixtureBatch()?.id || "missing",itemId:"missing",generation:0})`);
     await h.emit('changed', { id: 42, state: { current: 'complete' } });
     assert.equal(h.run('downloadIdToKey.size'), 0);
   }

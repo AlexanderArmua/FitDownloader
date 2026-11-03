@@ -67,20 +67,19 @@ test('loads real MV3 worker and scans a controlled page in the isolated world', 
 });
 
 async function showSelection(extension) {
-  const { worker, source, popup, id } = extension;
-  const tabId = await worker.evaluate(async sourceUrl => (await chrome.tabs.query({ url: sourceUrl }))[0].id, source.url());
+  const { popup, id } = extension;
   // The real extension page renders a real scan response. Only active-tab
   // discovery is stubbed; selection/events and Chrome messaging stay real.
-  await popup.addInitScript(({ tabId }) => {
+  await popup.addInitScript(() => {
     const send = chrome.runtime.sendMessage.bind(chrome.runtime);
     chrome.runtime.sendMessage = (message, callback) => {
       if (message.type === 'scan_current_tab') {
-        callback({ ok: true, tabId, session: { hasStarted: false, items: [0, 1, 2].map(i => ({
-          url: `https://fuckingfast.co/file${i}`, label: `Part ${i}`, state: 'queued'
+        callback({ ok: true, batchId: 'fixture-batch', session: { hasStarted: false, items: [0, 1, 2].map(i => ({
+          id: `file-${i}`, url: `https://fuckingfast.co/file${i}`, label: `Part ${i}`, state: 'queued'
         })) } });
       } else return send(message, callback);
     };
-  }, { tabId });
+  });
   await popup.goto(`chrome-extension://${id}/popup.html`);
   return popup;
 }
@@ -129,12 +128,14 @@ test('pointer checkbox activation and native modifier clicks update selection', 
 
 test('fresh browser context preserves saved settings and session data for rehydration', async ({ extension }) => {
   await extension.worker.evaluate(async () => {
+    await chrome.storage.local.remove('ffBatchState');
     await chrome.storage.local.set({ ffSessions: { 123: { tabId: 123, hasStarted: true, paused: true, items: [{ url: 'https://fuckingfast.co/file', label: 'Saved file', state: 'queued' }] } } });
   });
   const { worker } = await extension.restart();
   const restored = await worker.evaluate(async () => {
     await loadSessions();
-    return { label: sessions[123].items[0].label, concurrency: (await getCurrentSettings()).concurrency };
+    const batch = Object.values(sessions).find(batch => batch.sourceTabId === 123);
+    return { label: batch.items[0].label, concurrency: (await getCurrentSettings()).concurrency };
   });
   expect(restored).toEqual({ label: 'Saved file', concurrency: 3 });
 });
@@ -146,58 +147,80 @@ test('Chrome completes a tiny local data download and reconciliation records com
       filename: 'fitdownloader-test-fixture.txt', saveAs: false
     });
     sessionsLoaded = true; downloadMapLoaded = true;
-    sessions[999] = createSessionFromExtractedLinks(
+    const batch = createSessionFromExtractedLinks(
       { id: 999, url: 'https://fitgirl-repacks.site/fixture/' }, 'Tiny fixture',
       [{ url: 'https://fuckingfast.co/file', label: 'Tiny fixture' }], 0);
-    sessions[999].hasStarted = true;
-    sessions[999].items[0].downloadId = id;
-    sessions[999].items[0].state = 'downloading';
-    return id;
+    sessions[batch.id] = batch;
+    batch.hasStarted = true;
+    batch.items[0].downloadId = id;
+    batch.items[0].state = 'downloading';
+    return { downloadId: id, batchId: batch.id };
   });
-  await expect.poll(() => extension.worker.evaluate(async id => (await chrome.downloads.search({ id }))[0]?.state, result)).toBe('complete');
-  const state = await extension.worker.evaluate(async () => {
-    await reconcileSessionForTab(999);
-    return sessions[999].items[0].state;
-  });
+  await expect.poll(() => extension.worker.evaluate(async id => (await chrome.downloads.search({ id }))[0]?.state, result.downloadId)).toBe('complete');
+  const state = await extension.worker.evaluate(async batchId => {
+    await reconcileBatch(batchId);
+    return sessions[batchId].items[0].state;
+  }, result.batchId);
   expect(state).toBe('completed');
 });
 
 test('closed-source batches remain accessible and cancellable through the real popup', async ({ extension }) => {
-  const tabId = await extension.worker.evaluate(async sourceUrl => {
+  const batchId = await extension.worker.evaluate(async sourceUrl => {
     const [tab] = await chrome.tabs.query({ url: sourceUrl });
     sessionsLoaded = true; downloadMapLoaded = true;
-    sessions[tab.id] = createSessionFromExtractedLinks(tab, 'Closed source fixture', [{ url: 'https://fuckingfast.co/file', label: 'Part 1' }], 0);
-    sessions[tab.id].hasStarted = true;
-    sessions[tab.id].paused = true;
+    const batch = createSessionFromExtractedLinks(tab, 'Closed source fixture', [{ url: 'https://fuckingfast.co/file', label: 'Part 1' }], 0);
+    sessions[batch.id] = batch;
+    batch.hasStarted = true;
+    batch.paused = true;
     await saveSessions();
-    return tab.id;
+    return batch.id;
   }, extension.source.url());
   await extension.source.close();
-  await expect.poll(() => extension.worker.evaluate(id => sessions[id]?.sourceClosed, tabId)).toBe(true);
+  await expect.poll(() => extension.worker.evaluate(id => sessions[id]?.sourceClosed, batchId)).toBe(true);
   await extension.popup.goto(`chrome-extension://${extension.id}/popup.html`);
   await expect(extension.popup.locator('#batch-picker')).toContainText('Closed source fixture (source closed)');
   await expect(extension.popup.locator('#pause-resume-button')).toHaveText('Resume');
   await extension.popup.locator('#cancel-button').click();
-  await expect.poll(() => extension.worker.evaluate(id => sessions[id]?.hasStarted, tabId)).toBe(false);
+  await expect.poll(() => extension.worker.evaluate(id => sessions[id]?.hasStarted, batchId)).toBe(false);
 });
 
 test('failed batch results and Retry remain visible after the popup reopens', async ({ extension }) => {
-  const tabId = await extension.worker.evaluate(async sourceUrl => {
+  const batchId = await extension.worker.evaluate(async sourceUrl => {
     const [tab] = await chrome.tabs.query({ url: sourceUrl });
     sessionsLoaded = true; downloadMapLoaded = true;
-    sessions[tab.id] = createSessionFromExtractedLinks(tab, 'Failed fixture', [{ url: 'https://fuckingfast.co/file', label: 'Part 1' }], 0);
-    sessions[tab.id].hasStarted = true;
-    sessions[tab.id].items[0].state = 'error';
-    sessions[tab.id].items[0].error = 'Controlled failure';
-    return tab.id;
+    const batch = createSessionFromExtractedLinks(tab, 'Failed fixture', [{ url: 'https://fuckingfast.co/file', label: 'Part 1' }], 0);
+    sessions[batch.id] = batch;
+    batch.hasStarted = true;
+    batch.items[0].state = 'error';
+    batch.items[0].error = 'Controlled failure';
+    return batch.id;
   }, extension.source.url());
   await extension.popup.goto(`chrome-extension://${extension.id}/popup.html`);
   await expect(extension.popup.locator('#retry-button')).toBeVisible();
   await extension.popup.reload();
   await expect(extension.popup.locator('#retry-button')).toBeVisible();
   await expect(extension.popup.locator('#status')).toContainText('Controlled failure');
-  expect(await extension.worker.evaluate(id => sessions[id].items[0].state, tabId)).toBe('error');
+  expect(await extension.worker.evaluate(id => sessions[id].items[0].state, batchId)).toBe('error');
   await extension.popup.locator('#rescan-button').click();
   await expect(extension.popup.locator('#select-all-row')).toBeVisible();
   await expect(extension.popup.locator('#files-list input')).toHaveCount(3);
+});
+
+test('durable batch IDs distinguish an old detached source from a new scan of the same tab', async ({ extension }) => {
+  const result = await extension.worker.evaluate(async sourceUrl => {
+    const [tab] = await chrome.tabs.query({ url: sourceUrl });
+    await loadSessions();
+    const oldBatch = createSessionFromExtractedLinks(tab, 'Old batch', [{ url: 'https://fuckingfast.co/file', label: 'Original file' }], 0);
+    oldBatch.hasStarted = true; oldBatch.paused = true;
+    oldBatch.sourceAttached = false; oldBatch.sourceClosed = true;
+    sessions[oldBatch.id] = oldBatch;
+    const fresh = await ensureSessionForTab(tab);
+    return { oldId: oldBatch.id, newId: fresh.id, oldState: sessions[oldBatch.id].items[0].state,
+      ownerKeys: Object.keys(sessions), sourceTabId: tab.id };
+  }, extension.source.url());
+  expect(result.oldId).not.toBe(result.newId);
+  expect(result.ownerKeys).toContain(result.oldId);
+  expect(result.ownerKeys).toContain(result.newId);
+  expect(result.ownerKeys).not.toContain(String(result.sourceTabId));
+  expect(result.oldState).toBe('queued');
 });

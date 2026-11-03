@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { pageHarness } = require('./helpers/page.cjs');
 function session(states = ['queued', 'queued'], extra = {}) {
   return { hasStarted: false, paused: false, items: states.map((state, i) => ({
-    url: `https://fuckingfast.co/file${i}`, label: `Archive part ${i + 1}`, state
+    id: `file-${i}`, url: `https://fuckingfast.co/file${i}`, label: `Archive part ${i + 1}`, state
   })), ...extra };
 }
 function setup(t, value = session()) {
@@ -81,11 +81,11 @@ test('row, range, and modifier selection update summary and indeterminate state'
   assert.match(h.el('selection-info').textContent, /1 of 3/);
 });
 
-test('updates for another tab do not replace the current list', t => {
+test('updates for another batch do not replace the current list', t => {
   const h = setup(t);
-  h.broadcast({ type: 'session_updated', tabId: 999, session: session([]) });
+  h.broadcast({ type: 'session_updated', batchId: 'other-batch', session: session([]) });
   assert.equal(h.document.querySelectorAll('.file-row').length, 2);
-  h.broadcast({ type: 'session_updated', tabId: 1, session: session([]) });
+  h.broadcast({ type: 'session_updated', batchId: 'fixture-batch', session: session([]) });
   assert.equal(h.document.querySelectorAll('.file-row').length, 0);
 });
 
@@ -151,15 +151,24 @@ test('standalone options page shows load and save failures', t => {
 test('saved-batch picker safely displays closed batches and sends the selected owner ID', t => {
   const h = pageHarness(); t.after(h.close);
   h.state.session = session(['paused'], { hasStarted: true, paused: true });
-  h.state.batches = [{ tabId: 1, title: '<img>Saved batch', sourceClosed: true }, { tabId: 2, title: 'Other batch' }];
+  h.state.batches = [{ batchId: 'fixture-batch', title: '<img>Saved batch', sourceClosed: true }, { batchId: 'other-batch', title: 'Other batch' }];
   h.start();
   assert.equal(h.el('batch-picker-row').hidden, false);
   assert.match(h.el('batch-picker').textContent, /<img>Saved batch.*source closed/);
   assert.equal(h.el('batch-picker').querySelector('img'), null);
   h.el('pause-resume-button').click();
-  assert.equal(h.messages.at(-1).tabId, 1);
-  h.el('batch-picker').value = '2';
+  assert.equal(h.messages.at(-1).batchId, 'fixture-batch');
+  h.el('batch-picker').value = 'other-batch';
   h.el('batch-picker').dispatchEvent(new h.window.Event('change'));
   assert.equal(h.messages.at(-1).type, 'scan_current_tab');
-  assert.equal(h.messages.at(-1).tabId, 2);
+  assert.equal(h.messages.at(-1).batchId, 'other-batch');
+});
+
+test('selected files follow their IDs when session data is reordered independently of rows', t => {
+  const h = setup(t);
+  h.document.querySelectorAll('#files-list input')[1].click();
+  h.window.eval('currentSession.items.reverse()');
+  const selected = h.window.getSelectedItemsForStart();
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].id, 'file-0');
 });

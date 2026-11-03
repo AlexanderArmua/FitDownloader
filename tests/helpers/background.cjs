@@ -24,7 +24,10 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
     },
     storage: {
       local: {
-        async get(key) { if (state.storageError) throw state.storageError; return { [key]: clone(local[key]) }; },
+        async get(key) {
+          if (state.storageError) throw state.storageError;
+          return Object.fromEntries((Array.isArray(key) ? key : [key]).map(name => [name, clone(local[name])]));
+        },
         async set(value) { if (state.storageError) throw state.storageError; Object.assign(local, clone(value)); }
       },
       sync: {
@@ -53,7 +56,7 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
     scripting: { executeScript: async () => [{ result: { title: 'Game', items: [{ url: 'https://fuckingfast.co/file0', label: 'File 0' }] } }] }
   };
   const context = vm.createContext({
-    URL, AbortSignal, chrome,
+    URL, AbortSignal, chrome, crypto: require('node:crypto').webcrypto,
     console: { warn: (...args) => warnings.push(args), error: (...args) => warnings.push(args) },
     fetch: async (url, options) => {
       requests.push({ url, options });
@@ -66,13 +69,20 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
     const keepAlive = listeners.message(payload, {}, resolve);
     if (keepAlive !== true) resolve(undefined);
   });
+  run(`function fixtureBatch() {
+    return Object.values(sessions).find(batch => batch.sourceTabId === 1 && batch.sourceAttached) ||
+      Object.values(sessions).find(batch => batch.sourceTabId === 1);
+  }`);
+  const batchId = () => run('fixtureBatch()?.id');
   const seed = (count = 4) => run(`
     sessionsLoaded = true; downloadMapLoaded = true;
-    sessions[1] = createSessionFromExtractedLinks(
+    { const batch = createSessionFromExtractedLinks(
       {id: 1, url: 'https://fitgirl-repacks.site/game/'}, 'Game',
       Array.from({length: ${count}}, (_, i) => ({url: 'https://fuckingfast.co/file' + i, label: 'File ' + i})), 0);
-    sessions[1].hasStarted = true;
+      batch.hasStarted = true; sessions[batch.id] = batch;
+    }
   `);
+  const reconcile = async () => { await context.loadSessions(); await context.reconcileBatch(batchId()); };
   const emit = async (name, value) => {
     if (name === 'changed' && records.has(value.id)) {
       const record = records.get(value.id);
@@ -82,6 +92,6 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
     }
     listeners[name](value); await tick();
   };
-  return { context, chrome, requests, downloads, paused, resumed, cancelled, broadcasts, warnings, state, listeners, run, message, seed, emit };
+  return { context, chrome, requests, downloads, paused, resumed, cancelled, broadcasts, warnings, state, listeners, run, message, seed, emit, batchId, reconcile };
 }
 module.exports = { harness, tick, deferred, root };

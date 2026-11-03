@@ -55,8 +55,8 @@ test('parallel input rejects empty, fractional and out-of-range values', async (
 test('starting a batch saves the visible parallel limit before sending selected files', async () => {
   const h = harness();
   h.elements.get('parallel-input').value = '3';
-  h.elements.get('files-list').querySelectorAll = () => [{ checked: true, dataset: { index: '0' } }];
-  vm.runInContext('currentSession = {items: [{url: "https://fuckingfast.co/file", label: "file"}]}', h.context);
+  h.elements.get('files-list').querySelectorAll = () => [{ checked: true, dataset: { itemId: 'file-0' } }];
+  vm.runInContext('currentSession = {items: [{id:"file-0",url: "https://fuckingfast.co/file", label: "file"}]}', h.context);
   await h.elements.get('start-button').click();
   assert.equal(h.messages[0].type, 'save_settings');
   assert.equal(h.messages[0].settings.concurrency, 3);

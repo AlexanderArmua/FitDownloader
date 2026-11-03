@@ -28,6 +28,7 @@ On Linux, Chromium may also need system libraries: use Playwright's documented `
 
 - `background.test.cjs`: original host/security/queue tests, now using the shared background harness.
 - `lifecycle.test.cjs`: message APIs, event-driven scheduling, persistence, rehydration, reconciliation, API errors and ownership tracking.
+- `identities.test.cjs` / `migration.test.cjs`: durable batch/file ownership after tab reuse or reordering, legacy migration, failure preservation, partial old writes, cross-batch selection rejection, and idempotent snapshot reload.
 - `host-fixtures.test.cjs`: HTMX headers, errors, timeouts, body failures, large HTML, and actual DOM scanning fixtures. The large-body test characterizes parsing; a production response-size limit remains ARCH-06.
 - `page-rendering.test.cjs`: JSDOM renders the real popup/options HTML and runs their real scripts, including selection/status, injection safety, settings and failures.
 - `popup.test.cjs`: original settings and message-order tests retained.
@@ -57,7 +58,11 @@ The four original desired-behavior specifications were each demonstrated failing
 
 All now pass in the standard unit/coverage command. `npm run test:regressions` selects the focused recovery subset; it is not a second collection of skipped or expected failures. The separate red-spec file and non-blocking CI job have been removed.
 
-Additional tests cover concurrent recovery without duplicate starts, a saved verification pause, live resolver ownership, full browser-start Resume behavior, detached batch controls, and explicit rescanning. Browser tests verify closed-source access and failed-result retention through the real popup. Stable batch IDs and complete mutation serialization remain separate planned work (REL-05/REL-06).
+Additional tests cover concurrent recovery without duplicate starts, a saved verification pause, live resolver ownership, full browser-start Resume behavior, detached batch controls, and explicit rescanning. Browser tests verify closed-source access and failed-result retention through the real popup. Full mutation serialization remains planned work (REL-06).
+
+REL-05 is now implemented: batches are keyed by opaque IDs, file IDs follow queue items, and source tab IDs are metadata only. The `ffBatchState` schema-2 snapshot stores batches and the download map together. Migration commits this snapshot before exposing migrated state or starting work, retaining old `ffSessions`/`ffDownloadMap` values untouched. A failed write or unsupported/ambiguous state stops hydration without deleting saved data. This is an upgrade path, not a guarantee that older extension versions can safely resume newer state.
+
+Browser tests also cover legacy state across browser restart and distinguish a detached historical batch from a new scan of the same source tab. Unit tests demonstrate the three original identity bugs red/green. Full mutation serialization and browser API error rollback remain REL-06/REL-07.
 
 ## Dependency and CI notes
 
