@@ -200,6 +200,39 @@ test('closed-source batches remain accessible and cancellable through the real p
   await expect.poll(() => extension.worker.evaluate(id => sessions[id]?.hasStarted, batchId)).toBe(false);
 });
 
+test('real Chrome pause rejection stays tracked and offers Retry Pause in the popup', async ({ extension }) => {
+  const batchId = await extension.worker.evaluate(async sourceUrl => {
+    await loadSessions();
+    const [tab] = await chrome.tabs.query({ url: sourceUrl });
+    const batch = createSessionFromExtractedLinks(tab, 'Controlled API rejection', [{ url: 'https://fuckingfast.co/file', label: 'Part 1' }], 0);
+    batch.hasStarted = true;
+    batch.items[0].state = 'downloading'; batch.items[0].downloadId = 987654321;
+    sessions[batch.id] = batch;
+    // Only status lookup is stubbed. The nonexistent ID makes Chrome itself
+    // reject Pause, exercising the real promise error and popup message path.
+    const search = chrome.downloads.search.bind(chrome.downloads);
+    chrome.downloads.search = (query, callback) => query.id === 987654321
+      ? callback([{ id: query.id, state: 'in_progress', paused: false }]) : search(query, callback);
+    await reconcileBatch(batch.id);
+    await saveSessions();
+    return batch.id;
+  }, extension.source.url());
+  await extension.popup.goto(`chrome-extension://${extension.id}/popup.html`);
+  await expect(extension.popup.locator('#pause-resume-button')).toHaveText('Pause');
+  await extension.popup.locator('#pause-resume-button').click();
+  await expect(extension.popup.locator('#status')).toContainText('Could not pause');
+  await expect(extension.popup.locator('#pause-resume-button')).toHaveText('Retry Pause');
+  await expect(extension.popup.locator('.file-status')).toHaveText('downloading');
+  const item = await extension.worker.evaluate(async id => {
+    const state = (await chrome.storage.local.get('ffBatchState')).ffBatchState;
+    return state.batches[id].items[0];
+  }, batchId);
+  expect(item.downloadId).toBe(987654321);
+  expect(item.controlError).toBeTruthy();
+  await extension.popup.reload();
+  await expect(extension.popup.locator('#pause-resume-button')).toHaveText('Retry Pause');
+});
+
 test('failed batch results and Retry remain visible after the popup reopens', async ({ extension }) => {
   const batchId = await extension.worker.evaluate(async sourceUrl => {
     const [tab] = await chrome.tabs.query({ url: sourceUrl });

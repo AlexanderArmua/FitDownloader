@@ -20,7 +20,7 @@ npm run test:browser
 | `npm run check` | Required local static/unit/coverage checks. |
 | `npm run test:browser:install` | Download pinned Playwright Chromium into `node_modules/.cache/ms-playwright`. |
 | `npm run test:browser` | Real MV3 extension and popup tests in isolated temporary Chromium profiles. |
-| `npm run test:regressions` | Passing REL-01..06 recovery, identity, migration and serialization subset. |
+| `npm run test:regressions` | Passing REL-01..07 recovery, identity, migration, serialization and API-failure subset. |
 
 On Linux, Chromium may also need system libraries: use Playwright's documented `npx playwright install-deps chromium` command. Windows sandbox restrictions can prevent browser startup; running the same tests with normal process permissions may be necessary. Do not change production extension permissions or browser-security settings to make tests pass.
 
@@ -30,6 +30,7 @@ On Linux, Chromium may also need system libraries: use Playwright's documented `
 - `lifecycle.test.cjs`: message APIs, event-driven scheduling, persistence, rehydration, reconciliation, API errors and ownership tracking.
 - `identities.test.cjs` / `migration.test.cjs`: durable batch/file ownership after tab reuse or reordering, legacy migration, failure preservation, partial old writes, cross-batch selection rejection, and idempotent snapshot reload.
 - `serialization.test.cjs`: ordered immutable saves, reconciliation versus Cancel, overlapping Pause/Resume, completion during Pause, simultaneous scans, failed-operation recovery, reservation persistence, and late Chrome creation callbacks. Deferred APIs control interleavings without timing-based sleeps.
+- `browser-failures.test.cjs`: search failure versus absence, partial controls and retries, persisted rejection state, failed automatic Pause, failed late Cancel, generation ownership, and recovery without overwriting restarted files. REL-07 DOM tests verify useful errors, matching retry actions, transport failures and ignoring replies for another batch.
 - `host-fixtures.test.cjs`: HTMX headers, errors, timeouts, body failures, large HTML, and actual DOM scanning fixtures. The large-body test characterizes parsing; a production response-size limit remains ARCH-06.
 - `page-rendering.test.cjs`: JSDOM renders the real popup/options HTML and runs their real scripts, including selection/status, injection safety, settings and failures.
 - `popup.test.cjs`: original settings and message-order tests retained.
@@ -65,7 +66,9 @@ REL-05 is now implemented: batches are keyed by opaque IDs, file IDs follow queu
 
 Browser tests also cover legacy state across browser restart, distinguish a detached historical batch from a new scan of the same source tab, and verify simultaneous scans produce one durable batch. Unit tests demonstrate the three original identity bugs red/green.
 
-REL-06 serializes live state operations and immutable snapshot writes. Host fetches and Chrome download creation release the mutation queue; their results recheck durable ownership before committing. Three controlled regressions demonstrated out-of-order writes, cancelled ownership resurrection and overlapping Pause/Resume before the fix. A failed operation does not poison either queue. Browser API queries/controls and source extraction are awaited inside state operations, so a slow browser callback can delay later controls. Full API failure/partial-success rollback remains REL-07; early completion before Chrome's creation callback remains REL-09.
+REL-06 serializes live state operations and immutable snapshot writes. Host fetches and Chrome download creation release the mutation queue; their results recheck durable ownership before committing. Three controlled regressions demonstrated out-of-order writes, cancelled ownership resurrection and overlapping Pause/Resume before the fix. A failed operation does not poison either queue. Browser API queries/controls and source extraction are awaited inside state operations, so a slow browser callback can delay later controls.
+
+REL-07 retains actual successful control results and last confirmed state for rejected operations. Partial controls persist per-file errors and batch retry intent while holding queued work. Failed Cancel keeps live IDs mapped to the current generation; failed cancellation of late creation restores ownership without overwriting a new run. Failed status searches retain ownership and expose a refresh error. Six background and six initial DOM regressions were demonstrated failing before the fixes. Chromium verifies a real Pause API rejection using a nonexistent download ID (only status lookup is stubbed), persistence and the reopened popup's Retry Pause action. Automatic download-manager event synchronization remains REL-08; completion before creation callback registration remains REL-09. Storage write failures do not become an atomic transaction with Chrome operations; recovery still queries Chrome for actual outcomes.
 
 ## Dependency and CI notes
 

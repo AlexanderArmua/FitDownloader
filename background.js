@@ -198,6 +198,8 @@ function toQueuedItem(link) {
     url: link.url,
     label: link.label || link.url,
     state: "queued",
+    controlError: "",
+    syncError: "",
     downloadId: null
   };
 }
@@ -211,6 +213,8 @@ function normalizeSessionItem(item) {
     label: link.label,
     state: typeof item?.state === "string" ? item.state : "queued",
     error: typeof item?.error === "string" ? item.error : "",
+    controlError: typeof item?.controlError === "string" ? item.controlError : "",
+    syncError: typeof item?.syncError === "string" ? item.syncError : "",
     downloadId: Number.isInteger(item?.downloadId) && item.downloadId >= 0 ? item.downloadId : null
   };
 }
@@ -226,6 +230,8 @@ function normalizeSessionShape(session) {
       hasStarted: false,
       paused: false,
       generation: 0,
+      pendingControl: "",
+      controlError: "",
       allItems: [],
       items: []
     };
@@ -265,6 +271,8 @@ function normalizeSessionShape(session) {
     hasStarted: session.hasStarted === true,
     paused: session.paused === true,
     generation: Number.isInteger(session.generation) ? session.generation : 0,
+    pendingControl: ["pause", "resume", "cancel"].includes(session.pendingControl) ? session.pendingControl : "",
+    controlError: typeof session.controlError === "string" ? session.controlError : "",
     allItems,
     items: normalizedItems
   };
@@ -308,13 +316,14 @@ function createSessionFromExtractedLinks(tab, title, links, generation) {
 }
 
 function searchDownloadById(downloadId) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     chrome.downloads.search({ id: downloadId }, (results) => {
       if (chrome.runtime.lastError) {
-        resolve(null);
+        reject(new Error(chrome.runtime.lastError.message));
         return;
       }
-      resolve(Array.isArray(results) && results.length ? results[0] : null);
+      if (!Array.isArray(results)) { reject(new Error("Chrome returned an invalid download search result.")); return; }
+      resolve(results[0] || null);
     });
   });
 }
@@ -349,12 +358,22 @@ async function reconcileBatchState(batchId) {
     }
 
     const downloadId = item.downloadId;
-    const download = await searchDownloadById(downloadId);
+    let download;
+    try {
+      download = await searchDownloadById(downloadId);
+      if (item.syncError) { item.syncError = ""; sessionsChanged = true; }
+    } catch (error) {
+      item.syncError = "Could not check download status: " + (error.message || String(error));
+      downloadIdToKey.set(downloadId, { batchId, itemId: item.id, generation: session.generation });
+      sessionsChanged = mapChanged = true;
+      continue;
+    }
 
     if (!download) {
       downloadIdToKey.delete(downloadId);
       mapChanged = true;
       item.downloadId = null;
+      item.controlError = "";
       if (ACTIVE_ITEM_STATES.has(item.state)) {
         item.state = "cancelled";
       }
@@ -366,6 +385,7 @@ async function reconcileBatchState(batchId) {
       downloadIdToKey.delete(downloadId);
       mapChanged = true;
       item.downloadId = null;
+      item.controlError = "";
       item.state = "completed";
       sessionsChanged = true;
       continue;
@@ -375,12 +395,17 @@ async function reconcileBatchState(batchId) {
       downloadIdToKey.delete(downloadId);
       mapChanged = true;
       item.downloadId = null;
+      item.controlError = "";
       item.state = download.error === "USER_CANCELED" ? "cancelled" : "error";
       sessionsChanged = true;
       continue;
     }
 
     const nextState = download.paused ? "paused" : "downloading";
+    if (item.controlError && ((session.pendingControl === "pause" && download.paused) ||
+        (session.pendingControl === "resume" && !download.paused))) {
+      item.controlError = ""; sessionsChanged = true;
+    }
     if (item.state !== nextState) {
       item.state = nextState;
       sessionsChanged = true;
@@ -399,10 +424,9 @@ async function reconcileBatchState(batchId) {
     }
   }
 
-  if (session.hasStarted && !hasActiveItems(session) && session.paused) {
-    session.paused = false;
-    sessionsChanged = true;
-  }
+  const beforeControl = JSON.stringify([session.paused, session.hasStarted, session.pendingControl, session.controlError]);
+  refreshControlError(session);
+  if (beforeControl !== JSON.stringify([session.paused, session.hasStarted, session.pendingControl, session.controlError])) sessionsChanged = true;
 
   if (sessionsChanged) {
     sessions[batchId] = session;
@@ -412,6 +436,7 @@ async function reconcileBatchState(batchId) {
   if (sessionsChanged || mapChanged) {
     await saveSessions();
   }
+  if (existing.paused && !session.paused && session.hasStarted) pumpQueueForBatch(batchId).catch(console.error);
 }
 
 function findSessionForTab(tab) {
@@ -685,14 +710,20 @@ async function resolveReservedItem({ batchId, itemId, generation, url, ownership
     await mutateState(async () => {
       const item = getSessionItemForRun(batchId, itemId, generation);
       if (!item || item.state !== "starting") {
-        await chrome.downloads.cancel(downloadId);
+        try { await chrome.downloads.cancel(downloadId); }
+        catch (error) { await retainLateDownload(batchId, itemId, url, downloadId, error); }
         return;
       }
       item.downloadId = downloadId; item.state = "downloading";
       downloadIdToKey.set(downloadId, { batchId, itemId, generation });
       if (sessions[batchId].paused) {
-        await chrome.downloads.pause(downloadId);
-        item.state = "paused";
+        try { await chrome.downloads.pause(downloadId); item.state = "paused"; }
+        catch (error) {
+          const batch = sessions[batchId];
+          if (batch.pendingControl !== "pause") beginControl(batch, "pause");
+          item.controlError = error.message || String(error);
+          refreshControlError(batch);
+        }
       }
       await saveSessions(); broadcastSessionUpdate(batchId);
     });
@@ -737,6 +768,8 @@ chrome.downloads.onChanged.addListener(delta => {
       if (item && item.downloadId === delta.id) {
         item.downloadId = null;
         item.state = state === "complete" ? "completed" : delta.error?.current === "USER_CANCELED" ? "cancelled" : "error";
+        item.controlError = ""; item.syncError = "";
+        refreshControlError(sessions[key.batchId]);
       }
       await saveSessions(); broadcastSessionUpdate(key.batchId);
       return key;
@@ -780,6 +813,70 @@ async function sourceTabForBatch(batch) {
   } catch { return null; }
 }
 function scanResponse(session) { return { ok: true, session, batchId: session.id, batches: getBatchSummaries() }; }
+
+function beginControl(session, action) {
+  session.pendingControl = action;
+  session.controlError = "";
+  session.paused = true; // Hold queued work until the whole operation succeeds.
+  for (const item of session.items) item.controlError = "";
+}
+function refreshControlError(session) {
+  const action = session.pendingControl;
+  const failures = session.items.filter(item => item.controlError);
+  session.controlError = action && failures.length
+    ? `Could not ${action} ${failures.length} download(s). ${failures[0].controlError} Retry ${action} or use Chrome's Downloads.` : "";
+  if (session.controlError) return;
+  session.pendingControl = "";
+  if (action === "resume" || (session.hasStarted && !hasActiveItems(session))) session.paused = false;
+  if (action === "cancel" && !session.items.some(item => item.downloadId != null)) {
+    session.hasStarted = false; session.paused = false;
+  }
+}
+function controlResponse(session) {
+  return { ...scanResponse(session), ok: !session.controlError, error: session.controlError || undefined };
+}
+
+async function applyBatchControl(session, action) {
+  beginControl(session, action);
+  if (action === "cancel") session.generation++;
+  for (const item of session.items) {
+    const id = item.downloadId;
+    if (id == null) {
+      if (action === "cancel" && ACTIVE_ITEM_STATES.has(item.state)) item.state = "cancelled";
+      continue;
+    }
+    // Cancellation invalidates resolvers, but failed Chrome operations must
+    // retain ownership under the new generation so completion still works.
+    downloadIdToKey.set(id, { batchId: session.id, itemId: item.id, generation: session.generation });
+    if ((action === "pause" && item.state !== "downloading") ||
+        (action === "resume" && item.state !== "paused")) continue;
+    try {
+      await chrome.downloads[action](id);
+      item.state = action === "pause" ? "paused" : action === "resume" ? "downloading" : "cancelled";
+      if (action === "cancel") { downloadIdToKey.delete(id); item.downloadId = null; item.syncError = ""; }
+    } catch (error) {
+      item.controlError = error.message || String(error);
+    }
+  }
+  refreshControlError(session);
+  await saveSessions(); broadcastSessionUpdate(session.id);
+  return controlResponse(session);
+}
+
+async function retainLateDownload(batchId, itemId, url, downloadId, error) {
+  const batch = sessions[batchId] || normalizeSessionShape({ id: batchId, title: "Recovered download", sourceAttached: false });
+  sessions[batchId] = batch;
+  let item = batch.items.find(item => item.id === itemId && item.downloadId == null && item.state === "cancelled");
+  // A new run may already have reused the old file; never overwrite it.
+  if (!item) { item = toQueuedItem({ id: crypto.randomUUID(), url, label: url }); batch.items.push(item); }
+  if (batch.pendingControl !== "cancel") beginControl(batch, "cancel");
+  batch.hasStarted = true; batch.paused = true;
+  item.downloadId = downloadId; item.state = "downloading";
+  item.controlError = error.message || String(error);
+  downloadIdToKey.set(downloadId, { batchId, itemId: item.id, generation: batch.generation });
+  refreshControlError(batch);
+  await saveSessions(); broadcastSessionUpdate(batchId);
+}
 
 
 // Message-based API: opaque batch/file IDs are the only ownership selectors.
@@ -831,6 +928,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!selected.length) throw new Error("Selected files were not found in the current page scan.");
         session.generation++;
         session.items = selected; session.hasStarted = true; session.paused = false;
+        session.pendingControl = ""; session.controlError = "";
         for (const [id, key] of downloadIdToKey) if (key.batchId === session.id) downloadIdToKey.delete(id);
         await saveSessions(); broadcastSessionUpdate(session.id);
         pumpQueueForBatch(session.id, session.generation).catch(console.error);
@@ -838,30 +936,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const session = await controlBatch(message);
       if (message.type === "cancel_downloads") {
-        session.generation++; session.hasStarted = false; session.paused = false;
-        for (const item of session.items) {
-          if (item.downloadId != null) {
-            chrome.downloads.cancel(item.downloadId).catch(console.error);
-            downloadIdToKey.delete(item.downloadId); item.downloadId = null;
-          }
-          if (ACTIVE_ITEM_STATES.has(item.state)) item.state = "cancelled";
-        }
-        await saveSessions(); broadcastSessionUpdate(session.id);
+        const response = await applyBatchControl(session, "cancel");
+        if (!response.ok) return response;
         const tab = await sourceTabForBatch(session);
-        if (tab && isSupportedSource(tab.url)) await rebuildSessionState(tab, session.generation);
-        return { ok: true };
+        if (tab && isSupportedSource(tab.url)) return scanResponse(await rebuildSessionState(tab, session.generation));
+        return response;
       }
       if (message.type === "pause_downloads" || message.type === "resume_downloads") {
-        const pause = message.type === "pause_downloads";
-        session.paused = pause;
-        for (const item of session.items) {
-          if (item.downloadId == null) continue;
-          if (pause && item.state === "downloading") { await chrome.downloads.pause(item.downloadId); item.state = "paused"; }
-          if (!pause && item.state === "paused") { await chrome.downloads.resume(item.downloadId); item.state = "downloading"; }
-        }
-        await saveSessions(); broadcastSessionUpdate(session.id);
-        if (!pause) pumpQueueForBatch(session.id).catch(console.error);
-        return { ok: true };
+        const action = message.type === "pause_downloads" ? "pause" : "resume";
+        const response = await applyBatchControl(session, action);
+        if (response.ok && action === "resume") pumpQueueForBatch(session.id).catch(console.error);
+        return response;
       }
       if (hasActiveItems(session)) throw new Error("Wait for active work to finish before retrying failed files.");
       const failed = session.items.filter(item => item.state === "error");
@@ -871,7 +956,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await saveSessions(); broadcastSessionUpdate(session.id);
         pumpQueueForBatch(session.id, session.generation).catch(console.error);
       }
-      return { ok: true };
+      return scanResponse(session);
     });
   })().then(sendResponse, error => sendResponse({ ok: false, error: error.message || String(error) }));
   return true;

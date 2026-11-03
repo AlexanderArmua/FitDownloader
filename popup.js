@@ -210,7 +210,7 @@ function renderStatusView(session) {
     else if (item.state === "cancelled") { text = "cancelled"; cls = "status-cancelled"; }
 
     status.textContent = text;
-    if (item.error) status.title = item.error;
+    status.title = [item.error, item.controlError, item.syncError].filter(Boolean).join("\n");
     status.classList.add(cls);
 
     row.appendChild(label);
@@ -254,8 +254,10 @@ function renderStatusView(session) {
     retryButtonEl.style.display = "none";
 
     const anyPaused = session.paused || items.some((i) => i.state === "paused");
-    pauseResumeButtonEl.textContent = anyPaused ? "Resume" : "Pause";
+    const retryAction = session.controlError && ["pause", "resume"].includes(session.pendingControl) ? session.pendingControl : null;
+    pauseResumeButtonEl.textContent = retryAction ? (retryAction === "pause" ? "Retry Pause" : "Retry Resume") : anyPaused ? "Resume" : "Pause";
     pauseResumeButtonEl.className = anyPaused ? "btn-success" : "btn-warning";
+    cancelButtonEl.textContent = session.controlError && session.pendingControl === "cancel" ? "Retry Cancel" : "Cancel";
   } else {
     activeControlsEl.classList.remove("visible");
     startButtonEl.style.display = "";
@@ -271,6 +273,11 @@ function renderStatusView(session) {
       retryButtonEl.style.display = "none";
     }
   }
+  if (session.controlError) {
+    statusEl.textContent = session.controlError + (counts.downloading ? ` ${counts.downloading} download(s) still running.` : "");
+  }
+  const syncError = items.find(item => item.syncError)?.syncError;
+  if (syncError) statusEl.textContent += ` ${syncError} Open the popup again to refresh.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,26 +367,30 @@ startButtonEl.addEventListener("click", async () => {
   );
 });
 
-cancelButtonEl.addEventListener("click", () => {
-  chrome.runtime.sendMessage({ type: "cancel_downloads", batchId: currentBatchId }, (response) => {
-    if (response?.ok) scanCurrentTab();
+function sendBatchControl(type) {
+  const batchId = currentBatchId;
+  chrome.runtime.sendMessage({ type, batchId }, response => {
+    const transportError = chrome.runtime.lastError?.message;
+    if (currentBatchId !== batchId) return;
+    if (response?.session) applySessionResponse(response);
+    if (!response?.ok) {
+      statusEl.textContent = response?.error || transportError || "Unable to update this batch. Try again.";
+      return;
+    }
+    if (!response.session && (type === "cancel_downloads" || type === "retry_failed")) scanCurrentTab(type === "cancel_downloads" ? null : batchId);
   });
-});
+}
+
+cancelButtonEl.addEventListener("click", () => sendBatchControl("cancel_downloads"));
 
 pauseResumeButtonEl.addEventListener("click", () => {
-  const isPaused = pauseResumeButtonEl.textContent.trim() === "Resume";
-  chrome.runtime.sendMessage(
-    { type: isPaused ? "resume_downloads" : "pause_downloads", batchId: currentBatchId },
-    () => {}
-  );
+  const retryAction = currentSession?.controlError && currentSession.pendingControl;
+  const isPaused = currentSession?.paused || currentSession?.items?.some(item => item.state === "paused");
+  const action = ["pause", "resume"].includes(retryAction) ? retryAction : isPaused ? "resume" : "pause";
+  sendBatchControl(action + "_downloads");
 });
 
-retryButtonEl.addEventListener("click", () => {
-  retryButtonEl.style.display = "none";
-  chrome.runtime.sendMessage({ type: "retry_failed", batchId: currentBatchId }, (response) => {
-    if (response?.ok) scanCurrentTab();
-  });
-});
+retryButtonEl.addEventListener("click", () => sendBatchControl("retry_failed"));
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -439,6 +450,26 @@ applyParallelButtonEl.addEventListener("click", () => persistConcurrency(paralle
 // Tab scanning & live updates
 // ---------------------------------------------------------------------------
 
+function applySessionResponse(response) {
+  currentBatchId = response.batchId ?? null;
+  batchPickerEl.replaceChildren();
+  if (response.batches?.length && !response.batches.some((batch) => batch.batchId === currentBatchId)) {
+    const currentPage = document.createElement("option");
+    currentPage.value = String(currentBatchId);
+    currentPage.textContent = "Current page";
+    batchPickerEl.appendChild(currentPage);
+  }
+  for (const batch of response.batches || []) {
+    const option = document.createElement("option");
+    option.value = String(batch.batchId);
+    option.textContent = batch.title + (batch.sourceClosed ? " (source closed)" : "");
+    batchPickerEl.appendChild(option);
+  }
+  batchPickerEl.value = String(currentBatchId);
+  batchPickerRowEl.hidden = !response.batches?.length;
+  renderSession(response.session);
+}
+
 function scanCurrentTab(batchId = null, refresh = false) {
   chrome.runtime.sendMessage({ type: "scan_current_tab", batchId, refresh }, (response) => {
     if (!response || !response.ok) {
@@ -450,23 +481,7 @@ function scanCurrentTab(batchId = null, refresh = false) {
       selectAllRowEl.hidden = true;
       return;
     }
-    currentBatchId = response.batchId ?? null;
-    batchPickerEl.replaceChildren();
-    if (response.batches?.length && !response.batches.some((batch) => batch.batchId === currentBatchId)) {
-      const currentPage = document.createElement("option");
-      currentPage.value = String(currentBatchId);
-      currentPage.textContent = "Current page";
-      batchPickerEl.appendChild(currentPage);
-    }
-    for (const batch of response.batches || []) {
-      const option = document.createElement("option");
-      option.value = String(batch.batchId);
-      option.textContent = batch.title + (batch.sourceClosed ? " (source closed)" : "");
-      batchPickerEl.appendChild(option);
-    }
-    batchPickerEl.value = String(currentBatchId);
-    batchPickerRowEl.hidden = !response.batches?.length;
-    renderSession(response.session);
+    applySessionResponse(response);
   });
 }
 

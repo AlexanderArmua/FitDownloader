@@ -122,7 +122,9 @@ test('pause, resume, cancel and retry controls send their intended messages', t 
   const h = setup(t, session(['downloading'], { hasStarted: true }));
   h.el('pause-resume-button').click();
   assert.equal(h.messages.at(-1).type, 'pause_downloads');
-  h.el('pause-resume-button').textContent = 'Resume'; h.el('pause-resume-button').click();
+  h.state.session.paused = true;
+  h.broadcast({ type: 'session_updated', batchId: 'fixture-batch', session: h.state.session });
+  h.el('pause-resume-button').click();
   assert.equal(h.messages.at(-1).type, 'resume_downloads');
   h.el('cancel-button').click();
   assert.ok(h.messages.some(m => m.type === 'cancel_downloads'));
@@ -171,4 +173,75 @@ test('selected files follow their IDs when session data is reordered independent
   const selected = h.window.getSelectedItemsForStart();
   assert.equal(selected.length, 1);
   assert.equal(selected[0].id, 'file-0');
+});
+
+test('REL-07: partial Pause shows a retry action and accurate running state safely', t => {
+  const value = session(['downloading', 'paused'], { hasStarted: true, paused: true,
+    pendingControl: 'pause', controlError: 'Could not pause 1 download. <img src=x>' });
+  value.items[0].controlError = 'Chrome rejected pause';
+  const h = setup(t, value);
+  assert.match(h.el('status').textContent, /Could not pause/);
+  assert.match(h.el('status').textContent, /still running/);
+  assert.equal(h.el('status').querySelector('img'), null);
+  assert.equal(h.el('pause-resume-button').textContent, 'Retry Pause');
+  assert.match(h.document.querySelector('.file-status').title, /Chrome rejected pause/);
+  h.el('pause-resume-button').click();
+  assert.equal(h.messages.at(-1).type, 'pause_downloads');
+});
+
+for (const [button, states] of [['pause-resume-button', ['downloading']], ['cancel-button', ['downloading']], ['retry-button', ['error']]]) {
+  test(`REL-07: ${button} reports rejection and leaves a usable retry control`, t => {
+    const h = setup(t, session(states, { hasStarted: true }));
+    h.state.error = 'Chrome operation denied';
+    h.el(button).click();
+    assert.match(h.el('status').textContent, /Chrome operation denied/);
+    assert.equal(h.el(button).disabled, false);
+    assert.notEqual(h.el(button).style.display, 'none');
+  });
+}
+
+test('REL-07: status search failures remain visible without reporting a lost download', t => {
+  const value = session(['downloading'], { hasStarted: true });
+  value.items[0].syncError = 'Could not check download status: history unavailable';
+  const h = setup(t, value);
+  assert.match(h.el('status').textContent, /history unavailable/);
+  assert.equal(h.document.querySelector('.file-status').textContent, 'downloading');
+});
+
+for (const action of ['pause', 'resume', 'cancel']) {
+  test(`REL-07: partial ${action} replies render actual file states and the matching retry action`, t => {
+    const h = setup(t, session(['downloading', 'paused'], { hasStarted: true, paused: action === 'resume' }));
+    const partial = session(['downloading', 'paused'], { hasStarted: true, paused: true,
+      pendingControl: action, controlError: `Could not ${action} this download` });
+    h.window.chrome.runtime.sendMessage = (message, callback) => callback({ ok: false,
+      error: partial.controlError, session: partial, batchId: 'fixture-batch', batches: [] });
+    h.el(action === 'cancel' ? 'cancel-button' : 'pause-resume-button').click();
+    assert.match(h.el('status').textContent, new RegExp(`Could not ${action}`));
+    assert.equal(h.document.querySelectorAll('.file-status')[0].textContent, 'downloading');
+    assert.equal(h.document.querySelectorAll('.file-status')[1].textContent, 'paused');
+    assert.equal(h.el(action === 'cancel' ? 'cancel-button' : 'pause-resume-button').textContent,
+      `Retry ${action[0].toUpperCase() + action.slice(1)}`);
+  });
+}
+
+test('REL-07: control transport errors are shown and late replies cannot replace another batch', t => {
+  const h = setup(t, session(['downloading'], { hasStarted: true }));
+  const send = h.window.chrome.runtime.sendMessage;
+  let reply;
+  h.window.chrome.runtime.sendMessage = (message, callback) => {
+    if (message.type === 'pause_downloads') { reply = callback; return; }
+    send(message, callback);
+  };
+  h.el('pause-resume-button').click();
+  h.window.chrome.runtime.lastError = { message: 'Worker disconnected' };
+  reply(); delete h.window.chrome.runtime.lastError;
+  assert.match(h.el('status').textContent, /Worker disconnected/);
+  h.el('pause-resume-button').click();
+  h.state.batchId = 'other-batch';
+  h.state.batches = [{ batchId: 'other-batch', title: 'Other batch' }];
+  h.state.session = session(['completed'], { hasStarted: true });
+  h.window.scanCurrentTab('other-batch');
+  reply({ ok: false, error: 'Old request failed', batchId: 'fixture-batch', session: session(['paused'], { hasStarted: true }) });
+  assert.equal(h.document.querySelector('.file-status').textContent, 'completed');
+  assert.doesNotMatch(h.el('status').textContent, /Old request/);
 });

@@ -30,6 +30,7 @@ FitDownloader is a simple Chrome extension that scans supported FitGirl repack p
 8. Finished and failed results stay available when reopening the popup. Use **Retry failed** for failures, or **Scan page again** on the original page for a fresh selection after finishing/cancelling active work.
 9. After a full browser restart, press **Resume** to start queued work. Ordinary background-worker recovery reconciles existing Chrome downloads before continuing eligible queued files.
 10. Saved batches and files retain their identities even when tabs change or a queue is reordered. Existing saved queues are upgraded automatically; active Chrome downloads retain their download IDs.
+11. If Chrome rejects Pause, Resume or Cancel, successful changes are kept and affected files remain tracked. Use **Retry Pause**, **Retry Resume** or **Retry Cancel** to retry the unfinished operation. New queued files wait while an operation is incomplete; some existing downloads may still be running.
 
 ## Notes
 
@@ -62,7 +63,7 @@ npm run test:browser:install
 npm run test:browser
 ```
 
-`npm run check` runs scoped lint rules, manifest validation and 150 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
+`npm run check` runs scoped lint rules, manifest validation and 172 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
 
 Browser tests load the real extension in a separate Chromium profile, use controlled page fixtures, and download only a tiny generated text fixture. They do not visit the real file host or open advertising. Browser installation is kept in this project's dependency cache.
 
