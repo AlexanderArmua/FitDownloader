@@ -8,18 +8,18 @@ This is a trackable implementation backlog and handoff document for the project.
 
 | Field | Current value |
 | --- | --- |
-| Work status | REL-05 implemented locally: durable batch/file ownership and safe saved-state migration. Version 0.2.3 is ready for publication after final checks. |
+| Work status | REL-05 complete: durable batch/file ownership and safe saved-state migration. Version 0.2.3 published to the user's repository after required CI passed. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
-| Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; superseded by published runtime commit `ef55d70`, version 0.2.2. |
-| Current implementation branch | `fix/stable-batch-identities`, based on main at `86516ef`; version 0.2.3. Check Git for final publication revision. |
+| Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `69f4c98`, version 0.2.3. |
+| Current implementation branch | REL-05 branch `fix/stable-batch-identities`, runtime commit `69f4c98`, fast-forwarded to `main` with this documentation checkpoint. Start a new focused branch for REL-06. |
 | Next task | **REL-06:** serialize all state mutations/persistence, followed by REL-07 consistent browser API failure/rollback handling. |
 | Latest implementation boundary | Durable batch/file IDs, versioned single-key state, preserved legacy download ownership, ID-based messages and selection. Existing resolver protocol and host permissions unchanged. |
 | Next behavior work | Reproduce out-of-order storage writes and reconciliation/control races with delayed API mocks, then add a mutation queue without deadlocking recovery or resolver completion. |
-| Current validation | `npm run check`: 140 passing unit/DOM tests. `npm run test:browser`: all 9 pass. Named recovery/identity/migration subset is passing; no skipped or expected-failure tests. Coverage remains above unchanged 85/75/95 floors; final figures recorded in work log. |
+| Current validation | `npm run check`: 140 passing unit/DOM tests. `npm run test:browser`: all 9 pass. All 31 named recovery/identity/migration regressions pass. Coverage: 91.83% lines / 86.43% branches / 98.36% functions. Required Windows/Linux unit and Chromium CI jobs passed: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41753517891 . |
 | Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
-| Blockers | None locally. Windows browser tests need normal process permissions. Remote CI must be checked for the stable-ID branch after push. |
+| Blockers | None. Windows browser tests need normal process permissions. |
 | Changed areas | Durable state/migration, batch and file selectors, completion/resolver lookup, explicit source attachment, updated UI contract and regression fixtures; version 0.2.3 and docs. |
-| Publication status | User authorized pushing and continuing on 2026-11-03. Both milestones committed/pushed; own main advanced after required recovery CI passed. This documentation checkpoint records the completed publication. Existing upstream PR #2 remains unchanged; no GitHub release was created. |
+| Publication status | User authorized pushing and continuing on 2026-11-03. REL-05 runtime `69f4c98` passed all required CI jobs before advancing own main. This documentation checkpoint records publication; no GitHub release was created. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
 
@@ -299,7 +299,8 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Updated messages, saved-batch picker, live broadcasts and checkbox selection to use IDs. Cross-batch file selection and old numeric-tab control messages are rejected. Queue ordering no longer determines ownership.
 - The message dispatcher was consolidated to route every control through the new identity contract. Pause/resume await browser API results, but comprehensive rollback/partial-failure consistency is not claimed complete (REL-07).
 - Validation: 140 unit/DOM tests and 9 isolated Chromium tests pass, including legacy state across browser restart and old/new scans sharing source metadata. Host protocol and production permission lists were preserved. No real archive or ad page was used.
-- Coverage: 91.83% lines, 86.43% branches, 98.36% functions; thresholds were not weakened. All 31 named recovery/identity/migration regressions pass. Publication commit and remote CI results will be recorded after publication checks.
+- Coverage: 91.83% lines, 86.43% branches, 98.36% functions; thresholds were not weakened. All 31 named recovery/identity/migration regressions pass.
+- Publication: runtime commit `69f4c98` pushed to `origin/fix/stable-batch-identities`. Required Windows/Linux unit and browser jobs passed at https://github.com/AlexanderArmua/FitDownloader/actions/runs/41753517891 before fast-forwarding own main. This final checkpoint is documentation only.
 - Next task: REL-06. Add deferred storage and reconciliation/control interleaving regressions before changing mutation scheduling; keep network operations outside critical sections. Then REL-07 and the download-ID registration-window fix REL-09.
 
 ### Future work-log entry template
