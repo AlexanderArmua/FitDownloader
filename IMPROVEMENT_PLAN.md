@@ -8,18 +8,18 @@ This is a trackable implementation backlog and handoff document for the project.
 
 | Field | Current value |
 | --- | --- |
-| Work status | REL-06 implemented and locally validated: ordered state mutations and immutable persistence. Version 0.2.4 awaiting publication checks. |
+| Work status | REL-06 complete: ordered state mutations and immutable persistence. Version 0.2.4 published to the user's repository after required CI passed. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
-| Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `69f4c98`, version 0.2.3. |
-| Current implementation branch | `fix/serialized-state`, based on main `358c5fd`; version 0.2.4. Check Git for final publication revision. |
+| Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `037de32`, version 0.2.4. |
+| Current implementation branch | REL-06 branch `fix/serialized-state`, runtime commit `037de32`, fast-forwarded to `main` with this documentation checkpoint. Start a new focused branch for REL-07. |
 | Next task | **REL-07:** consistent browser API failure/partial-success handling, followed by REL-09 early download-completion registration. |
 | Latest implementation boundary | Global state mutation queue, ordered immutable snapshots, serialized reconciliation/controls/scans, persisted reservations before remote lookup, generation checks after asynchronous work. Host protocol and permissions unchanged. |
 | Next behavior work | Reproduce search, pause/resume and cancel failures with partial batch success. Preserve ownership and actionable errors when Chrome rejects operations; avoid treating a failed search as a missing download. |
-| Current validation | `npm run check`: 150 passing unit/DOM tests. `npm run test:browser`: all 10 pass. Coverage: 92.50% lines / 87.76% branches / 98.43% functions, above unchanged floors. Remote CI pending for REL-06. |
+| Current validation | `npm run check`: 150 passing unit/DOM tests. `npm run test:browser`: all 10 pass. All 41 named regressions pass. Coverage: 92.50% lines / 87.76% branches / 98.43% functions, above unchanged floors. Required Windows/Linux unit and Chromium CI jobs passed: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41755416391 . |
 | Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
-| Blockers | None locally. Windows browser tests need normal process permissions. Check required remote CI before advancing main. |
+| Blockers | None. Windows browser tests need normal process permissions. |
 | Changed areas | Background state scheduler/persistence, serialization regression suite, concurrent real-browser scans, version 0.2.4 and docs. |
-| Publication status | User authorized pushing and continuing on 2026-11-03. REL-06 awaits feature-branch push and required CI. No release object created. |
+| Publication status | User authorized pushing and continuing on 2026-11-03. REL-06 runtime `037de32` passed all required CI before advancing own main. This documentation checkpoint records publication. No release object created. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
 
@@ -312,7 +312,8 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Ten controlled concurrency regressions cover immutable writes, reconciliation/cancellation, Pause/Resume, completion/Pause, cancellation during host lookup, failed operations, simultaneous scans, reservation writes, and late creation callbacks. Existing lifecycle and security tests remain required.
 - Validation: 150 unit/DOM tests, 10 Chromium tests, lint/manifest and coverage integrity checks pass. Coverage: 92.50% lines / 87.76% branches / 98.43% functions, above unchanged thresholds. Browser tests use local page fixtures and tiny text downloads, with no ads or archive downloads.
 - Tradeoff: browser queries/controls and source extraction are awaited inside serialized operations, so slow browser callbacks can delay later controls. Network lookups do not block controls. API failure rollback and partial-success reporting remain REL-07; the early completion registration window remains REL-09. This change does not claim either task complete.
-- Publication pending required CI on the feature branch. Next task: REL-07; first reproduce failed search versus missing download and partial Pause/Resume/Cancel failures.
+- Publication: runtime commit `037de32` pushed to `origin/fix/serialized-state`; all required Windows/Linux unit and Chromium jobs passed at https://github.com/AlexanderArmua/FitDownloader/actions/runs/41755416391 before fast-forwarding own main. This final checkpoint is documentation only.
+- Next task: REL-07; first reproduce failed search versus missing download and partial Pause/Resume/Cancel failures.
 
 ### Future work-log entry template
 
