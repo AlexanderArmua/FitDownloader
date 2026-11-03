@@ -43,6 +43,7 @@
 - REL-01 through REL-04 are fixed and their regression tests are required in the normal lifecycle suite. `npm run test:regressions` runs that passing recovery subset. There are no known-failure skips, TODO masks, or non-blocking CI exceptions.
 - Browser startup pauses saved queues until explicit Resume; ordinary service-worker recovery reconciles and resumes eligible work. Closed-source batches remain accessible through the popup's Saved batches picker.
 - REL-05 uses durable batch/file IDs. Sessions are keyed by batch ID; `sourceTabId` is metadata only. Messages, resolver ownership and download mappings must use batch/item IDs, never tab IDs or array positions. The `ffBatchState` schema-2 snapshot stores sessions and mappings together; legacy keys are retained unchanged during migration.
+- REL-06 routes live state operations through `mutateState`. Internal `*State` helpers run inside that queue: never await a queued public wrapper from inside a mutation. Persist immutable snapshots in order; keep host fetches and Chrome download creation outside the mutation queue, then recheck file identity/generation when committing their results. Schedule queue pumps without awaiting them inside mutations.
 - Tests must not depend on live file-host uptime, advertising, challenge pages, or downloading archives. Use local fixtures and tiny test downloads for browser integration tests.
 - After development commands and CI exist, use the actual repository commands and update this section if they replace the baseline.
 

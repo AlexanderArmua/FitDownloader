@@ -84,6 +84,22 @@ async function showSelection(extension) {
   return popup;
 }
 
+test('simultaneous real page scans create one durable source batch', async ({ extension }) => {
+  const result = await extension.worker.evaluate(async sourceUrl => {
+    const [tab] = await chrome.tabs.query({ url: sourceUrl });
+    const batches = await Promise.all(Array.from({ length: 3 }, () => ensureSessionForTab(tab)));
+    const stored = (await chrome.storage.local.get('ffBatchState')).ffBatchState;
+    return {
+      ids: batches.map(batch => batch.id),
+      files: batches.map(batch => batch.items.length),
+      attached: Object.values(stored.batches).filter(batch => batch.sourceAttached && batch.sourceTabId === tab.id).length
+    };
+  }, extension.source.url());
+  expect(new Set(result.ids).size).toBe(1);
+  expect(result.files).toEqual([3, 3, 3]);
+  expect(result.attached).toBe(1);
+});
+
 test('real browser supports row, range, modifier, Select All and Space selection', async ({ extension }) => {
   const popup = await showSelection(extension);
   const rows = popup.locator('.file-row');

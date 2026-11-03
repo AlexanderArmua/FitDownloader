@@ -2,24 +2,24 @@
 
 Created: 2026-11-03 (America/Buenos_Aires).
 
-This is a trackable implementation backlog and handoff document for the project. Read alongside `AGENTS.md`. The test foundation and REL-01 through REL-05 are implemented and validated. Remaining reliability and product work is tracked below.
+This is a trackable implementation backlog and handoff document for the project. Read alongside `AGENTS.md`. The test foundation and REL-01 through REL-06 are implemented and validated. Remaining reliability and product work is tracked below.
 
 ## Resume checkpoint
 
 | Field | Current value |
 | --- | --- |
-| Work status | REL-05 complete: durable batch/file ownership and safe saved-state migration. Version 0.2.3 published to the user's repository after required CI passed. |
+| Work status | REL-06 implemented and locally validated: ordered state mutations and immutable persistence. Version 0.2.4 awaiting publication checks. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
 | Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `69f4c98`, version 0.2.3. |
-| Current implementation branch | REL-05 branch `fix/stable-batch-identities`, runtime commit `69f4c98`, fast-forwarded to `main` with this documentation checkpoint. Start a new focused branch for REL-06. |
-| Next task | **REL-06:** serialize all state mutations/persistence, followed by REL-07 consistent browser API failure/rollback handling. |
-| Latest implementation boundary | Durable batch/file IDs, versioned single-key state, preserved legacy download ownership, ID-based messages and selection. Existing resolver protocol and host permissions unchanged. |
-| Next behavior work | Reproduce out-of-order storage writes and reconciliation/control races with delayed API mocks, then add a mutation queue without deadlocking recovery or resolver completion. |
-| Current validation | `npm run check`: 140 passing unit/DOM tests. `npm run test:browser`: all 9 pass. All 31 named recovery/identity/migration regressions pass. Coverage: 91.83% lines / 86.43% branches / 98.36% functions. Required Windows/Linux unit and Chromium CI jobs passed: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41753517891 . |
+| Current implementation branch | `fix/serialized-state`, based on main `358c5fd`; version 0.2.4. Check Git for final publication revision. |
+| Next task | **REL-07:** consistent browser API failure/partial-success handling, followed by REL-09 early download-completion registration. |
+| Latest implementation boundary | Global state mutation queue, ordered immutable snapshots, serialized reconciliation/controls/scans, persisted reservations before remote lookup, generation checks after asynchronous work. Host protocol and permissions unchanged. |
+| Next behavior work | Reproduce search, pause/resume and cancel failures with partial batch success. Preserve ownership and actionable errors when Chrome rejects operations; avoid treating a failed search as a missing download. |
+| Current validation | `npm run check`: 150 passing unit/DOM tests. `npm run test:browser`: all 10 pass. Coverage: 92.50% lines / 87.76% branches / 98.43% functions, above unchanged floors. Remote CI pending for REL-06. |
 | Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
-| Blockers | None. Windows browser tests need normal process permissions. |
-| Changed areas | Durable state/migration, batch and file selectors, completion/resolver lookup, explicit source attachment, updated UI contract and regression fixtures; version 0.2.3 and docs. |
-| Publication status | User authorized pushing and continuing on 2026-11-03. REL-05 runtime `69f4c98` passed all required CI jobs before advancing own main. This documentation checkpoint records publication; no GitHub release was created. |
+| Blockers | None locally. Windows browser tests need normal process permissions. Check required remote CI before advancing main. |
+| Changed areas | Background state scheduler/persistence, serialization regression suite, concurrent real-browser scans, version 0.2.4 and docs. |
+| Publication status | User authorized pushing and continuing on 2026-11-03. REL-06 awaits feature-branch push and required CI. No release object created. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
 
@@ -156,7 +156,7 @@ Checkboxes represent completion, not merely that work was attempted. Reference t
 | [x] | REL-03 | 3 | P1 | Worker-local resolver ownership distinguishes live requests from orphaned persisted `starting` jobs; tests cover both requeueing and avoiding duplicate live requests. |
 | [x] | REL-04 | 4 | P1 | Terminal results/Retry survive reopening and reconciliation; explicit Scan page again starts fresh selection only after active work finishes/cancels. Verified in unit and browser tests. |
 | [x] | REL-05 | 5 | P1 | Durable batch/file IDs route queues, messages and completion; tab/index-reuse failures fixed. Schema-2 migration preserves Chrome download IDs, stable reloads, legacy backups and failure safety. |
-| [ ] | REL-06 | 6 | P1 | Serialize mutations/persistence and share hydration promises; controlled concurrency tests prove older reads/writes cannot overwrite newer state. |
+| [x] | REL-06 | 6 | P1 | Serialize mutations/persistence and share hydration promises; controlled concurrency tests prove older reads/writes cannot overwrite newer state. |
 | [ ] | REL-07 | 7 | P1 | Await pause/resume/cancel results; represent API rejection accurately and retain tracking of downloads still running. |
 | [ ] | REL-08 | 8 | P1 | Browser download-manager pause/resume/cancel/removal changes synchronize with batch state without reopening the popup. |
 | [ ] | REL-09 | 9 | P1 | Completion arriving before mapping registration is reconciled without lost progress, stuck slots, or duplicate work. |
@@ -302,6 +302,17 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Coverage: 91.83% lines, 86.43% branches, 98.36% functions; thresholds were not weakened. All 31 named recovery/identity/migration regressions pass.
 - Publication: runtime commit `69f4c98` pushed to `origin/fix/stable-batch-identities`. Required Windows/Linux unit and browser jobs passed at https://github.com/AlexanderArmua/FitDownloader/actions/runs/41753517891 before fast-forwarding own main. This final checkpoint is documentation only.
 - Next task: REL-06. Add deferred storage and reconciliation/control interleaving regressions before changing mutation scheduling; keep network operations outside critical sections. Then REL-07 and the download-ID registration-window fix REL-09.
+
+### 2026-11-03 — REL-06: serialized state and persistence
+
+- Branch `fix/serialized-state`, based on `358c5fd`; version 0.2.4. Added `tests/serialization.test.cjs` and one isolated Chromium test.
+- Demonstrated three failures before implementation: writes completed out of order; delayed reconciliation restored cancelled ownership; Resume overtook a pending Pause and left Chrome paused. All pass after the fix.
+- All live state entry points now serialize through one mutation queue, sharing hydration and recovery. Internal state helpers avoid nested queue waits. Persisted snapshots are copied at call time and written in order; rejection does not poison either queue. Removed redundant separate-map writes and unused compatibility helpers.
+- Queue slots are reserved and persisted before host lookup. Failed reservation writes restore slots without remote requests. Host fetches and Chrome download creation run outside the mutation queue; later commits validate durable file identity and generation. Late creation after cancellation cancels the new Chrome download instead of attaching it to the new state.
+- Ten controlled concurrency regressions cover immutable writes, reconciliation/cancellation, Pause/Resume, completion/Pause, cancellation during host lookup, failed operations, simultaneous scans, reservation writes, and late creation callbacks. Existing lifecycle and security tests remain required.
+- Validation: 150 unit/DOM tests, 10 Chromium tests, lint/manifest and coverage integrity checks pass. Coverage: 92.50% lines / 87.76% branches / 98.43% functions, above unchanged thresholds. Browser tests use local page fixtures and tiny text downloads, with no ads or archive downloads.
+- Tradeoff: browser queries/controls and source extraction are awaited inside serialized operations, so slow browser callbacks can delay later controls. Network lookups do not block controls. API failure rollback and partial-success reporting remain REL-07; the early completion registration window remains REL-09. This change does not claim either task complete.
+- Publication pending required CI on the feature branch. Next task: REL-07; first reproduce failed search versus missing download and partial Pause/Resume/Cancel failures.
 
 ### Future work-log entry template
 

@@ -20,7 +20,7 @@ npm run test:browser
 | `npm run check` | Required local static/unit/coverage checks. |
 | `npm run test:browser:install` | Download pinned Playwright Chromium into `node_modules/.cache/ms-playwright`. |
 | `npm run test:browser` | Real MV3 extension and popup tests in isolated temporary Chromium profiles. |
-| `npm run test:regressions` | Passing REL-01..04 recovery subset of the required lifecycle suite. |
+| `npm run test:regressions` | Passing REL-01..06 recovery, identity, migration and serialization subset. |
 
 On Linux, Chromium may also need system libraries: use Playwright's documented `npx playwright install-deps chromium` command. Windows sandbox restrictions can prevent browser startup; running the same tests with normal process permissions may be necessary. Do not change production extension permissions or browser-security settings to make tests pass.
 
@@ -29,6 +29,7 @@ On Linux, Chromium may also need system libraries: use Playwright's documented `
 - `background.test.cjs`: original host/security/queue tests, now using the shared background harness.
 - `lifecycle.test.cjs`: message APIs, event-driven scheduling, persistence, rehydration, reconciliation, API errors and ownership tracking.
 - `identities.test.cjs` / `migration.test.cjs`: durable batch/file ownership after tab reuse or reordering, legacy migration, failure preservation, partial old writes, cross-batch selection rejection, and idempotent snapshot reload.
+- `serialization.test.cjs`: ordered immutable saves, reconciliation versus Cancel, overlapping Pause/Resume, completion during Pause, simultaneous scans, failed-operation recovery, reservation persistence, and late Chrome creation callbacks. Deferred APIs control interleavings without timing-based sleeps.
 - `host-fixtures.test.cjs`: HTMX headers, errors, timeouts, body failures, large HTML, and actual DOM scanning fixtures. The large-body test characterizes parsing; a production response-size limit remains ARCH-06.
 - `page-rendering.test.cjs`: JSDOM renders the real popup/options HTML and runs their real scripts, including selection/status, injection safety, settings and failures.
 - `popup.test.cjs`: original settings and message-order tests retained.
@@ -58,11 +59,13 @@ The four original desired-behavior specifications were each demonstrated failing
 
 All now pass in the standard unit/coverage command. `npm run test:regressions` selects the focused recovery subset; it is not a second collection of skipped or expected failures. The separate red-spec file and non-blocking CI job have been removed.
 
-Additional tests cover concurrent recovery without duplicate starts, a saved verification pause, live resolver ownership, full browser-start Resume behavior, detached batch controls, and explicit rescanning. Browser tests verify closed-source access and failed-result retention through the real popup. Full mutation serialization remains planned work (REL-06).
+Additional tests cover concurrent recovery without duplicate starts, a saved verification pause, live resolver ownership, full browser-start Resume behavior, detached batch controls, and explicit rescanning. Browser tests verify closed-source access and failed-result retention through the real popup.
 
 REL-05 is now implemented: batches are keyed by opaque IDs, file IDs follow queue items, and source tab IDs are metadata only. The `ffBatchState` schema-2 snapshot stores batches and the download map together. Migration commits this snapshot before exposing migrated state or starting work, retaining old `ffSessions`/`ffDownloadMap` values untouched. A failed write or unsupported/ambiguous state stops hydration without deleting saved data. This is an upgrade path, not a guarantee that older extension versions can safely resume newer state.
 
-Browser tests also cover legacy state across browser restart and distinguish a detached historical batch from a new scan of the same source tab. Unit tests demonstrate the three original identity bugs red/green. Full mutation serialization and browser API error rollback remain REL-06/REL-07.
+Browser tests also cover legacy state across browser restart, distinguish a detached historical batch from a new scan of the same source tab, and verify simultaneous scans produce one durable batch. Unit tests demonstrate the three original identity bugs red/green.
+
+REL-06 serializes live state operations and immutable snapshot writes. Host fetches and Chrome download creation release the mutation queue; their results recheck durable ownership before committing. Three controlled regressions demonstrated out-of-order writes, cancelled ownership resurrection and overlapping Pause/Resume before the fix. A failed operation does not poison either queue. Browser API queries/controls and source extraction are awaited inside state operations, so a slow browser callback can delay later controls. Full API failure/partial-success rollback remains REL-07; early completion before Chrome's creation callback remains REL-09.
 
 ## Dependency and CI notes
 

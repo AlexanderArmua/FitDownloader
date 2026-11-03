@@ -46,6 +46,22 @@ let stateLoadPromise;
 let recoveryPromise;
 let browserRestart = false;
 let downloadIdToKey = new Map();
+let mutationTail = Promise.resolve();
+let persistenceTail = Promise.resolve();
+// All live state entry points use this queue. Internal *State functions run
+// inside it and must not enqueue/await another mutation. Host fetches run outside.
+function mutateState(operation) {
+  const result = mutationTail.then(async () => { await loadState(); return operation(); });
+  mutationTail = result.catch(() => {});
+  return result;
+}
+function persistSnapshot(snapshot) {
+  // Capture at call time, not when an older write eventually finishes.
+  const value = JSON.parse(JSON.stringify(snapshot));
+  const result = persistenceTail.then(() => chrome.storage.local.set(value));
+  persistenceTail = result.catch(() => {});
+  return result;
+}
 const ACTIVE_ITEM_STATES = new Set(["queued", "starting", "downloading", "paused"]);
 const activeResolvers = new Set();
 function validId(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value); }
@@ -124,7 +140,7 @@ async function loadState() {
     } else {
       ({ batches, map } = migrateLegacyState(stored.ffSessions, stored.ffDownloadMap));
       // Commit the complete migration atomically; keep legacy keys untouched.
-      await chrome.storage.local.set({ [STATE_KEY]: stateSnapshot(batches, map) });
+      await persistSnapshot({ [STATE_KEY]: stateSnapshot(batches, map) });
     }
     sessions = batches; downloadIdToKey = map;
     sessionsLoaded = downloadMapLoaded = true;
@@ -132,23 +148,20 @@ async function loadState() {
   return stateLoadPromise;
 }
 async function loadSessions() { return loadState(); }
-async function loadDownloadMap() { return loadState(); }
-async function saveSessions() { await chrome.storage.local.set({ [STATE_KEY]: stateSnapshot() }); }
-async function saveDownloadMap() { return saveSessions(); }
+async function saveSessions() { await persistSnapshot({ [STATE_KEY]: stateSnapshot() }); }
 function recoverSessions() {
   if (recoveryPromise) return recoveryPromise;
-  recoveryPromise = (async () => {
-    await loadState();
+  recoveryPromise = mutateState(async () => {
     for (const batch of Object.values(sessions)) {
       if (browserRestart) {
         batch.sourceAttached = false;
         if (batch.hasStarted) batch.paused = true;
       }
-      await reconcileBatch(batch.id);
+      await reconcileBatchState(batch.id);
     }
     await saveSessions();
-    for (const id of Object.keys(sessions)) await pumpQueueForBatch(id);
-  })().catch(error => { recoveryPromise = null; throw error; });
+    for (const id of Object.keys(sessions)) pumpQueueForBatch(id).catch(console.error);
+  }).catch(error => { recoveryPromise = null; throw error; });
   return recoveryPromise;
 }
 chrome.runtime.onStartup.addListener(() => { browserRestart = true; recoverSessions().catch(console.error); });
@@ -307,9 +320,9 @@ function searchDownloadById(downloadId) {
 }
 
 async function reconcileBatch(batchId) {
-  await loadSessions();
-  await loadDownloadMap();
-
+  return mutateState(() => reconcileBatchState(batchId));
+}
+async function reconcileBatchState(batchId) {
   const existing = sessions[batchId];
   if (!existing) return;
 
@@ -397,10 +410,7 @@ async function reconcileBatch(batchId) {
   }
 
   if (sessionsChanged || mapChanged) {
-    await Promise.all([
-      sessionsChanged ? saveSessions() : Promise.resolve(),
-      mapChanged ? saveDownloadMap() : Promise.resolve()
-    ]);
+    await saveSessions();
   }
 }
 
@@ -408,7 +418,7 @@ function findSessionForTab(tab) {
   return Object.values(sessions).find(batch => batch.sourceAttached && !batch.sourceClosed &&
     batch.sourceTabId === tab?.id && normalizeSessionUrl(batch.sourceUrl) === normalizeSessionUrl(tab.url));
 }
-async function rebuildSessionForTab(tab, generation) {
+async function rebuildSessionState(tab, generation) {
   const { title, items } = await extractFuckingFastLinks(tab.id);
   const rebuilt = createSessionFromExtractedLinks(tab, title, items, generation);
   for (const batch of Object.values(sessions)) {
@@ -605,11 +615,13 @@ function startDownload(dlUrl) {
  * Ensure we have a session for the given active FitGirl tab.
  */
 async function ensureSessionForTab(tab) {
+  return mutateState(() => ensureSessionState(tab));
+}
+async function ensureSessionState(tab) {
   if (!isSupportedSource(tab?.url)) throw new Error("Please open an HTTPS FitGirl repack page first.");
-  await loadState();
   const existing = findSessionForTab(tab);
-  if (existing) { await reconcileBatch(existing.id); return sessions[existing.id]; }
-  return rebuildSessionForTab(tab, 0);
+  if (existing) { await reconcileBatchState(existing.id); return sessions[existing.id]; }
+  return rebuildSessionState(tab, 0);
 }
 
 /**
@@ -618,100 +630,86 @@ async function ensureSessionForTab(tab) {
  * a download for that URL completes.
  */
 async function pumpQueueForBatch(batchId, expectedGeneration) {
-  await loadSessions();
   const { concurrency } = await getCurrentSettings();
-  await loadDownloadMap();
-  // Read current state after all awaits, then reserve slots synchronously.
-  const existingSession = sessions[batchId];
-  if (!existingSession) return;
-  const session = normalizeSessionShape(existingSession);
-  sessions[batchId] = session;
-  if (!session.hasStarted || !Array.isArray(session.items) || !session.items.length) return;
-
-  const runGeneration =
-    expectedGeneration == null ? getSessionGeneration(session) : expectedGeneration;
-  if (!isSessionGenerationCurrent(batchId, runGeneration)) return;
-
-  const maxConcurrent = clampConcurrency(concurrency);
-
-  if (session.paused) return;
-
-  const activeCount = session.items.filter(
-    (item) => item.state === "starting" || item.state === "downloading"
-  ).length;
-
-  let availableSlots = maxConcurrent - activeCount;
-  if (availableSlots <= 0) return;
-
-  for (let i = 0; i < session.items.length && availableSlots > 0; i++) {
-    const item = getSessionItemForRun(batchId, session.items[i].id, runGeneration);
-    if (!item) continue;
-    if (item.state !== "queued") continue;
-
-    availableSlots--;
-    item.state = "starting";
-    item.error = "";
-    const ownershipKey = resolverKey(batchId, item.id, runGeneration);
-    activeResolvers.add(ownershipKey);
-
-    (async (itemId, generation) => {
-      try {
-        const activeItemBeforeFetch = getSessionItemForRun(batchId, itemId, generation);
-        if (!activeItemBeforeFetch || activeItemBeforeFetch.state !== "starting") {
-          return;
+  const reservations = await mutateState(async () => {
+    const session = sessions[batchId];
+    if (!session || !session.hasStarted || session.paused) return [];
+    const generation = expectedGeneration ?? getSessionGeneration(session);
+    if (!isSessionGenerationCurrent(batchId, generation)) return [];
+    const active = session.items.filter(item => item.state === "starting" || item.state === "downloading").length;
+    let slots = clampConcurrency(concurrency) - active;
+    const reserved = [];
+    for (const item of session.items) {
+      if (slots <= 0) break;
+      if (item.state !== "queued") continue;
+      slots--;
+      item.state = "starting"; item.error = "";
+      const ownershipKey = resolverKey(batchId, item.id, generation);
+      activeResolvers.add(ownershipKey);
+      reserved.push({ batchId, itemId: item.id, generation, url: item.url, ownershipKey });
+    }
+    if (reserved.length) {
+      try { await saveSessions(); }
+      catch (error) {
+        for (const reservation of reserved) {
+          activeResolvers.delete(reservation.ownershipKey);
+          const item = getSessionItemForRun(batchId, reservation.itemId, generation);
+          if (item) item.state = "queued";
         }
-
-        const dlUrl = await getDirectDownloadUrl(activeItemBeforeFetch.url);
-
-        const activeItemBeforeDownload = getSessionItemForRun(batchId, itemId, generation);
-        if (!activeItemBeforeDownload || activeItemBeforeDownload.state !== "starting") {
-          return;
-        }
-
-        if (sessions[batchId].paused) {
-          activeItemBeforeDownload.state = "queued";
-          await saveSessions();
-          broadcastSessionUpdate(batchId);
-          return;
-        }
-        const downloadId = await startDownload(dlUrl);
-
-        const activeItemAfterDownload = getSessionItemForRun(batchId, itemId, generation);
-        if (!activeItemAfterDownload || activeItemAfterDownload.state !== "starting") {
-          try {
-            chrome.downloads.cancel(downloadId);
-          } catch (e) {
-            // ignore
-          }
-          return;
-        }
-
-        activeItemAfterDownload.downloadId = downloadId;
-        activeItemAfterDownload.state = "downloading";
-        downloadIdToKey.set(downloadId, { batchId, itemId, generation });
-        // Pause may arrive while Chrome is creating the download.
-        if (sessions[batchId].paused) {
-          await chrome.downloads.pause(downloadId);
-          const current = getSessionItemForRun(batchId, itemId, generation);
-          if (current) current.state = "paused";
-        }
-        await Promise.all([saveSessions(), saveDownloadMap()]);
-        broadcastSessionUpdate(batchId);
-      } catch (err) {
-        const activeItemOnError = getSessionItemForRun(batchId, itemId, generation);
-        if (!activeItemOnError) return;
-        console.warn("Failed to start FuckingFast URL:", activeItemOnError.url, err);
-        activeItemOnError.state = err.code === "HOST_VERIFICATION" ? "queued" : "error";
-        if (err.code === "HOST_VERIFICATION") sessions[batchId].paused = true;
-        activeItemOnError.error = err.message || String(err);
-        activeItemOnError.downloadId = null;
-        await saveSessions();
-        broadcastSessionUpdate(batchId);
-        pumpQueueForBatch(batchId, generation);
-      } finally {
-        activeResolvers.delete(ownershipKey);
+        throw error;
       }
-    })(item.id, runGeneration);
+    }
+    return reserved;
+  });
+  for (const reservation of reservations) resolveReservedItem(reservation).catch(console.error);
+}
+
+async function resolveReservedItem({ batchId, itemId, generation, url, ownershipKey }) {
+  let ownsReservation = true;
+  try {
+    // Remote requests never hold the mutation queue. Cancel and other batches
+    // remain usable while a host is slow or presents a verification page.
+    const dlUrl = await getDirectDownloadUrl(url);
+    const mayStart = await mutateState(async () => {
+      const item = getSessionItemForRun(batchId, itemId, generation);
+      if (!item || item.state !== "starting") return false;
+      if (!sessions[batchId].paused) return true;
+      item.state = "queued";
+      activeResolvers.delete(ownershipKey);
+      ownsReservation = false;
+      await saveSessions(); broadcastSessionUpdate(batchId);
+      return false;
+    });
+    if (!mayStart) return;
+    const downloadId = await startDownload(dlUrl);
+    await mutateState(async () => {
+      const item = getSessionItemForRun(batchId, itemId, generation);
+      if (!item || item.state !== "starting") {
+        await chrome.downloads.cancel(downloadId);
+        return;
+      }
+      item.downloadId = downloadId; item.state = "downloading";
+      downloadIdToKey.set(downloadId, { batchId, itemId, generation });
+      if (sessions[batchId].paused) {
+        await chrome.downloads.pause(downloadId);
+        item.state = "paused";
+      }
+      await saveSessions(); broadcastSessionUpdate(batchId);
+    });
+  } catch (error) {
+    await mutateState(async () => {
+      const item = getSessionItemForRun(batchId, itemId, generation);
+      if (!item || item.state !== "starting") return;
+      console.warn("Failed to start FuckingFast URL:", item.url, error);
+      item.state = error.code === "HOST_VERIFICATION" ? "queued" : "error";
+      if (error.code === "HOST_VERIFICATION") sessions[batchId].paused = true;
+      item.error = error.message || String(error);
+      item.downloadId = null;
+      await saveSessions(); broadcastSessionUpdate(batchId);
+      pumpQueueForBatch(batchId, generation).catch(console.error);
+    });
+  } finally {
+    if (ownsReservation) await mutateState(() => { activeResolvers.delete(ownershipKey); });
   }
 }
 
@@ -720,28 +718,34 @@ chrome.downloads.onChanged.addListener(delta => {
   const state = delta.state?.current;
   if (state !== "complete" && state !== "interrupted") return;
   (async () => {
-    await loadState();
-    let key = downloadIdToKey.get(delta.id);
-    if (!key) return;
-    let item = getSessionItemForRun(key.batchId, key.itemId, key.generation);
-    if (!item || item.downloadId !== delta.id) {
-      downloadIdToKey.delete(delta.id); await saveSessions(); return;
-    }
+    const tracked = await mutateState(async () => {
+      const key = downloadIdToKey.get(delta.id);
+      if (!key) return false;
+      const item = getSessionItemForRun(key.batchId, key.itemId, key.generation);
+      if (item && item.downloadId === delta.id) return true;
+      downloadIdToKey.delete(delta.id);
+      await saveSessions();
+      return false;
+    });
+    if (!tracked) return;
     await recoverSessions();
-    key = downloadIdToKey.get(delta.id);
-    if (!key) return;
-    item = getSessionItemForRun(key.batchId, key.itemId, key.generation);
-    if (!item || item.downloadId !== delta.id) return;
-    downloadIdToKey.delete(delta.id);
-    item.downloadId = null;
-    item.state = state === "complete" ? "completed" : delta.error?.current === "USER_CANCELED" ? "cancelled" : "error";
-    await saveSessions(); broadcastSessionUpdate(key.batchId);
-    await pumpQueueForBatch(key.batchId, key.generation);
+    const owner = await mutateState(async () => {
+      const key = downloadIdToKey.get(delta.id);
+      if (!key) return null;
+      const item = getSessionItemForRun(key.batchId, key.itemId, key.generation);
+      downloadIdToKey.delete(delta.id);
+      if (item && item.downloadId === delta.id) {
+        item.downloadId = null;
+        item.state = state === "complete" ? "completed" : delta.error?.current === "USER_CANCELED" ? "cancelled" : "error";
+      }
+      await saveSessions(); broadcastSessionUpdate(key.batchId);
+      return key;
+    });
+    if (owner) await pumpQueueForBatch(owner.batchId, owner.generation);
   })().catch(console.error);
 });
 chrome.tabs.onRemoved.addListener(sourceTabId => {
-  (async () => {
-    await loadState();
+  mutateState(async () => {
     for (const batch of Object.values(sessions)) {
       if (batch.sourceTabId !== sourceTabId || !batch.sourceAttached) continue;
       batch.sourceClosed = true; batch.sourceAttached = false;
@@ -749,7 +753,7 @@ chrome.tabs.onRemoved.addListener(sourceTabId => {
       broadcastSessionUpdate(batch.id);
     }
     await saveSessions();
-  })().catch(console.error);
+  }).catch(console.error);
 });
 function getBatchSummaries() {
   return Object.values(sessions).filter(batch => batch.hasStarted).map(batch => ({
@@ -784,90 +788,91 @@ const MESSAGE_TYPES = new Set(["scan_current_tab", "start_downloads", "get_setti
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !MESSAGE_TYPES.has(message.type)) return;
   (async () => {
-    await loadState();
-    if (message.tabId != null) throw new Error("Refresh the extension popup to use durable batch IDs.");
-    if (message.type === "scan_current_tab") {
-      await recoverSessions();
-      if (message.refresh === true) {
-        const selected = message.batchId != null ? requireBatch(message.batchId) : null;
-        const tab = selected ? await sourceTabForBatch(selected) : await activeTab();
-        if (!tab || !isSupportedSource(tab.url)) throw new Error("Open the original HTTPS FitGirl page to scan again.");
-        const current = selected || findSessionForTab(tab);
-        if (hasActiveItems(current)) throw new Error("Finish or cancel the current batch before scanning again.");
-        return scanResponse(await rebuildSessionForTab(tab, getSessionGeneration(current) + 1));
-      }
-      if (message.batchId != null) {
-        const batch = requireBatch(message.batchId);
-        await reconcileBatch(batch.id); return scanResponse(sessions[batch.id]);
-      }
-      const tab = await activeTab();
-      if (isSupportedSource(tab?.url)) return scanResponse(await ensureSessionForTab(tab));
-      const [saved] = getBatchSummaries();
-      if (!saved) throw new Error("Please open a FitGirl repack page first.");
-      await reconcileBatch(saved.batchId); return scanResponse(sessions[saved.batchId]);
-    }
-    if (message.type === "get_settings") {
-      await recoverSessions(); return { ok: true, settings: await getCurrentSettings() };
-    }
-    if (message.type === "get_session") { await recoverSessions(); return { ok: true, sessions }; }
-    if (message.type === "save_settings") {
-      const concurrency = clampConcurrency(message.settings?.concurrency);
-      await new Promise((resolve, reject) => chrome.storage.sync.set({ concurrency }, () => {
-        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message)); else resolve();
-      }));
-      for (const id of Object.keys(sessions)) pumpQueueForBatch(id).catch(console.error);
-      return { ok: true, settings: { concurrency } };
-    }
-    if (message.type === "start_downloads") {
-      const session = message.batchId != null ? requireBatch(message.batchId) : await ensureSessionForTab(await activeTab());
-      if (hasActiveItems(session)) throw new Error("A batch is already running. Cancel it before starting another.");
-      const selectedIds = new Set(Array.isArray(message.items) ? message.items.map(item => item?.id).filter(validId) : []);
-      if (!selectedIds.size) throw new Error("No files selected for download.");
-      const selected = session.allItems.filter(item => selectedIds.has(item.id)).map(toQueuedItem);
-      if (!selected.length) throw new Error("Selected files were not found in the current page scan.");
-      session.generation++;
-      session.items = selected; session.hasStarted = true; session.paused = false;
-      for (const [id, key] of downloadIdToKey) if (key.batchId === session.id) downloadIdToKey.delete(id);
-      await saveSessions(); broadcastSessionUpdate(session.id);
-      pumpQueueForBatch(session.id, session.generation).catch(console.error);
-      return { ok: true };
-    }
-    const session = await controlBatch(message);
-    if (message.type === "cancel_downloads") {
-      session.generation++; session.hasStarted = false; session.paused = false;
-      for (const item of session.items) {
-        if (item.downloadId != null) {
-          chrome.downloads.cancel(item.downloadId).catch(console.error);
-          downloadIdToKey.delete(item.downloadId); item.downloadId = null;
+    if (["scan_current_tab", "get_settings", "get_session"].includes(message.type)) await recoverSessions();
+    return mutateState(async () => {
+      if (message.tabId != null) throw new Error("Refresh the extension popup to use durable batch IDs.");
+      if (message.type === "scan_current_tab") {
+        if (message.refresh === true) {
+          const selected = message.batchId != null ? requireBatch(message.batchId) : null;
+          const tab = selected ? await sourceTabForBatch(selected) : await activeTab();
+          if (!tab || !isSupportedSource(tab.url)) throw new Error("Open the original HTTPS FitGirl page to scan again.");
+          const current = selected || findSessionForTab(tab);
+          if (hasActiveItems(current)) throw new Error("Finish or cancel the current batch before scanning again.");
+          return scanResponse(await rebuildSessionState(tab, getSessionGeneration(current) + 1));
         }
-        if (ACTIVE_ITEM_STATES.has(item.state)) item.state = "cancelled";
+        if (message.batchId != null) {
+          const batch = requireBatch(message.batchId);
+          await reconcileBatchState(batch.id); return scanResponse(sessions[batch.id]);
+        }
+        const tab = await activeTab();
+        if (isSupportedSource(tab?.url)) return scanResponse(await ensureSessionState(tab));
+        const [saved] = getBatchSummaries();
+        if (!saved) throw new Error("Please open a FitGirl repack page first.");
+        await reconcileBatchState(saved.batchId); return scanResponse(sessions[saved.batchId]);
       }
-      await saveSessions(); broadcastSessionUpdate(session.id);
-      const tab = await sourceTabForBatch(session);
-      if (tab && isSupportedSource(tab.url)) await rebuildSessionForTab(tab, session.generation);
-      return { ok: true };
-    }
-    if (message.type === "pause_downloads" || message.type === "resume_downloads") {
-      const pause = message.type === "pause_downloads";
-      session.paused = pause;
-      for (const item of session.items) {
-        if (item.downloadId == null) continue;
-        if (pause && item.state === "downloading") { await chrome.downloads.pause(item.downloadId); item.state = "paused"; }
-        if (!pause && item.state === "paused") { await chrome.downloads.resume(item.downloadId); item.state = "downloading"; }
+      if (message.type === "get_settings") {
+        return { ok: true, settings: await getCurrentSettings() };
       }
-      await saveSessions(); broadcastSessionUpdate(session.id);
-      if (!pause) pumpQueueForBatch(session.id).catch(console.error);
+      if (message.type === "get_session") { return { ok: true, sessions }; }
+      if (message.type === "save_settings") {
+        const concurrency = clampConcurrency(message.settings?.concurrency);
+        await new Promise((resolve, reject) => chrome.storage.sync.set({ concurrency }, () => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message)); else resolve();
+        }));
+        for (const id of Object.keys(sessions)) pumpQueueForBatch(id).catch(console.error);
+        return { ok: true, settings: { concurrency } };
+      }
+      if (message.type === "start_downloads") {
+        const session = message.batchId != null ? requireBatch(message.batchId) : await ensureSessionState(await activeTab());
+        if (hasActiveItems(session)) throw new Error("A batch is already running. Cancel it before starting another.");
+        const selectedIds = new Set(Array.isArray(message.items) ? message.items.map(item => item?.id).filter(validId) : []);
+        if (!selectedIds.size) throw new Error("No files selected for download.");
+        const selected = session.allItems.filter(item => selectedIds.has(item.id)).map(toQueuedItem);
+        if (!selected.length) throw new Error("Selected files were not found in the current page scan.");
+        session.generation++;
+        session.items = selected; session.hasStarted = true; session.paused = false;
+        for (const [id, key] of downloadIdToKey) if (key.batchId === session.id) downloadIdToKey.delete(id);
+        await saveSessions(); broadcastSessionUpdate(session.id);
+        pumpQueueForBatch(session.id, session.generation).catch(console.error);
+        return { ok: true };
+      }
+      const session = await controlBatch(message);
+      if (message.type === "cancel_downloads") {
+        session.generation++; session.hasStarted = false; session.paused = false;
+        for (const item of session.items) {
+          if (item.downloadId != null) {
+            chrome.downloads.cancel(item.downloadId).catch(console.error);
+            downloadIdToKey.delete(item.downloadId); item.downloadId = null;
+          }
+          if (ACTIVE_ITEM_STATES.has(item.state)) item.state = "cancelled";
+        }
+        await saveSessions(); broadcastSessionUpdate(session.id);
+        const tab = await sourceTabForBatch(session);
+        if (tab && isSupportedSource(tab.url)) await rebuildSessionState(tab, session.generation);
+        return { ok: true };
+      }
+      if (message.type === "pause_downloads" || message.type === "resume_downloads") {
+        const pause = message.type === "pause_downloads";
+        session.paused = pause;
+        for (const item of session.items) {
+          if (item.downloadId == null) continue;
+          if (pause && item.state === "downloading") { await chrome.downloads.pause(item.downloadId); item.state = "paused"; }
+          if (!pause && item.state === "paused") { await chrome.downloads.resume(item.downloadId); item.state = "downloading"; }
+        }
+        await saveSessions(); broadcastSessionUpdate(session.id);
+        if (!pause) pumpQueueForBatch(session.id).catch(console.error);
+        return { ok: true };
+      }
+      if (hasActiveItems(session)) throw new Error("Wait for active work to finish before retrying failed files.");
+      const failed = session.items.filter(item => item.state === "error");
+      if (failed.length) {
+        for (const item of failed) { item.state = "queued"; item.downloadId = null; }
+        session.generation++; session.hasStarted = true; session.paused = false;
+        await saveSessions(); broadcastSessionUpdate(session.id);
+        pumpQueueForBatch(session.id, session.generation).catch(console.error);
+      }
       return { ok: true };
-    }
-    if (hasActiveItems(session)) throw new Error("Wait for active work to finish before retrying failed files.");
-    const failed = session.items.filter(item => item.state === "error");
-    if (failed.length) {
-      for (const item of failed) { item.state = "queued"; item.downloadId = null; }
-      session.generation++; session.hasStarted = true; session.paused = false;
-      await saveSessions(); broadcastSessionUpdate(session.id);
-      pumpQueueForBatch(session.id, session.generation).catch(console.error);
-    }
-    return { ok: true };
+    });
   })().then(sendResponse, error => sendResponse({ ok: false, error: error.message || String(error) }));
   return true;
 });
