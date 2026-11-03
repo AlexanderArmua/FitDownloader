@@ -11,6 +11,7 @@
 
 - Primary repository: `https://github.com/AlexanderArmua/FitDownloader` (`origin`).
 - Original project: `https://github.com/axel-devs/FitDownloader` (`upstream`).
+- Work in this repository for now, until the original creator starts accepting new pull requests. Coordinate any future upstream contribution with the user.
 - Upstream contribution: `https://github.com/axel-devs/FitDownloader/pull/2`. This is context, not the default destination for new work.
 - Work on the user's fork. Use a focused branch for implementation; do not rewrite existing history or change the upstream PR without current authorization.
 - Do not infer permission to push, publish releases, create additional PRs, install the extension, or start large real downloads merely from this file. Follow the active user's request and existing session authorization.
@@ -55,3 +56,7 @@ Update `IMPROVEMENT_PLAN.md` in the same change as implementation:
 - Keep the task IDs stable; record deferred or superseded work rather than silently deleting it.
 
 The plan is the durable source of progress. A future chat must be able to resume from the files alone.
+
+## Final responses
+
+Finish each final response with concrete suggestions for the next work, normally the next task from the plan and its purpose.
