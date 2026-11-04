@@ -8,18 +8,18 @@ This is a trackable implementation backlog and handoff document for the project.
 
 | Field | Current value |
 | --- | --- |
-| Work status | Reliability and recovery complete locally: REL-08/09/10 implemented and validated. Version 0.2.6 awaiting publication checks. |
+| Work status | Reliability and recovery complete: all REL-01..10 implemented and validated. Version 0.2.6 published to the user's repository after required CI passed. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
-| Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `6fdac97`, version 0.2.5. |
-| Current implementation branch | `fix/reliability-completion`, based on main `41ec8b7`; version 0.2.6. Check Git for final publication revision. |
+| Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `1dcf07d`, version 0.2.6. |
+| Current implementation branch | Reliability branch `fix/reliability-completion`, runtime commit `1dcf07d`, fast-forwarded to `main` with this documentation checkpoint. Start a new focused branch for ARCH-04. |
 | Next task | **ARCH-04:** validate message senders/payloads and limits, then ARCH-05 broader saved-state validation and recovery. Keep other unchecked tasks explicit, including remaining DEV-02 static tooling. |
 | Latest implementation boundary | Immediate registration reconciliation, bounded early events, external Chrome event synchronization, persisted interrupted-attempt associations, and batch-scoped abortable resolver requests/body reads. Host protocol and production permissions unchanged. |
 | Next behavior work | Begin Phase 2 with adversarial message-shape/sender/limit tests before enforcing validation. Preserve existing batch ownership and active download recovery; do not turn malformed input into lost Chrome IDs. |
-| Current validation | `npm run check`: 199 passing unit/DOM tests. `npm run test:browser`: all 14 pass. All 90 named regressions pass. Coverage: 93.73% lines / 88.83% branches / 98.71% functions, above unchanged floors. Remote CI pending for reliability completion. |
+| Current validation | `npm run check`: 199 passing unit/DOM tests. `npm run test:browser`: all 14 pass. All 90 named regressions pass. Coverage: 93.73% lines / 88.83% branches / 98.71% functions, above unchanged floors. Required Windows/Linux unit and Chromium CI jobs passed: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41770212105 . |
 | Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
-| Blockers | None locally. Windows browser tests need normal process permissions. Check required remote CI before advancing main. |
+| Blockers | None. Windows browser tests need normal process permissions. |
 | Changed areas | Chrome event/registration handling, optional saved resume associations, resolver cancellation, paused-slot/status semantics, realistic creation fixtures and browser integration; version 0.2.6 and docs. |
-| Publication status | User authorized pushing and continuing on 2026-11-03. Reliability completion awaits feature-branch push and required CI. No release object created. |
+| Publication status | User authorized pushing and continuing on 2026-11-03. Reliability runtime `1dcf07d` passed all required CI before advancing own main. This documentation checkpoint records publication. No release object created. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
 
@@ -337,7 +337,8 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Test harness now models unique browser download IDs across worker recreation, exposes erased events and records actual Chrome IDs before delayed creation callbacks. Older manually delayed fixtures were corrected to include real browser records before those callbacks.
 - Validation: 199 unit/DOM tests, all 90 named regressions, lint, manifest and coverage integrity checks pass. Coverage: 93.73% lines / 88.83% branches / 98.71% functions; thresholds unchanged. All 14 Chromium tests pass, including real tiny early-completion downloads, real Chrome controls against a small loopback text fixture, and native AbortSignals through popup Cancel. The held-text fixture initially sent too few bytes for Chrome to recognize the download; corrected its initial chunk/attachment header and reran successfully.
 - Host resolver protocol, HTTPS/host policy and production permissions remain unchanged. No ads, real archives or personal browser profiles were used. The loopback server and test profiles are torn down. Chrome/storage crash atomicity and general history retention/clear-history UX are not claimed complete; the latter remains DEV-08.
-- Publication pending required CI. Next task: ARCH-04, then broader ARCH-05; reliability work is complete.
+- Publication: runtime commit `1dcf07d` pushed to `origin/fix/reliability-completion`; all required Windows/Linux unit and Chromium jobs passed at https://github.com/AlexanderArmua/FitDownloader/actions/runs/41770212105 before fast-forwarding own main. This final checkpoint is documentation only.
+- Next task: ARCH-04, then broader ARCH-05; reliability work is complete.
 
 ### Future work-log entry template
 
