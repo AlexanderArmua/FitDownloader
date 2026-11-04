@@ -2,24 +2,24 @@
 
 Created: 2026-11-03 (America/Buenos_Aires).
 
-This is a trackable implementation backlog and handoff document for the project. Read alongside `AGENTS.md`. The test foundation and all ten reliability/recovery tasks are implemented and validated. Remaining architecture, tooling and product work is tracked below; 21 of 60 tasks are complete.
+This is a trackable implementation backlog and handoff document for the project. Read alongside `AGENTS.md`. The test foundation, all ten reliability/recovery tasks and runtime release packaging are implemented and validated. Remaining architecture, tooling and product work is tracked below; 22 of 60 tasks are complete.
 
 ## Resume checkpoint
 
 | Field | Current value |
 | --- | --- |
-| Work status | Reliability and recovery complete: all REL-01..10 implemented and validated. Version 0.2.6 published to the user's repository after required CI passed. |
+| Work status | DEV-03 implemented locally: runtime-only ZIP/checksum and automatic GitHub releases after tested main. Initial v0.2.6 release pending publication checks. Runtime remains unchanged. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
 | Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `1dcf07d`, version 0.2.6. |
-| Current implementation branch | Reliability branch `fix/reliability-completion`, runtime commit `1dcf07d`, fast-forwarded to `main` with this documentation checkpoint. Start a new focused branch for ARCH-04. |
+| Current implementation branch | `chore/automatic-releases`, based on main `ba6f961`; runtime version 0.2.6 unchanged. Check Git for publication revision. |
 | Next task | **ARCH-04:** validate message senders/payloads and limits, then ARCH-05 broader saved-state validation and recovery. Keep other unchecked tasks explicit, including remaining DEV-02 static tooling. |
-| Latest implementation boundary | Immediate registration reconciliation, bounded early events, external Chrome event synchronization, persisted interrupted-attempt associations, and batch-scoped abortable resolver requests/body reads. Host protocol and production permissions unchanged. |
+| Latest implementation boundary | Release packaging of committed HEAD, exact runtime allowlist and checksum, tested-main/own-repository gate, draft asset verification and immutable published-version behavior, latest download/install links. Runtime and production permissions unchanged. |
 | Next behavior work | Begin Phase 2 with adversarial message-shape/sender/limit tests before enforcing validation. Preserve existing batch ownership and active download recovery; do not turn malformed input into lost Chrome IDs. |
-| Current validation | `npm run check`: 199 passing unit/DOM tests. `npm run test:browser`: all 14 pass. All 90 named regressions pass. Coverage: 93.73% lines / 88.83% branches / 98.71% functions, above unchanged floors. Required Windows/Linux unit and Chromium CI jobs passed: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41770212105 . |
+| Current validation | `npm run check`: 216 passing unit/DOM/tooling tests, including 17 release tests. `npm run package` builds a validated 11-file runtime ZIP/checksum. Application coverage unchanged: 93.73% lines / 88.83% branches / 98.71% functions. Prior runtime has 14 passing Chromium tests; required remote CI and initial release run pending for this change. |
 | Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
-| Blockers | None. Windows browser tests need normal process permissions. |
-| Changed areas | Chrome event/registration handling, optional saved resume associations, resolver cancellation, paused-slot/status semantics, realistic creation fixtures and browser integration; version 0.2.6 and docs. |
-| Publication status | User authorized pushing and continuing on 2026-11-03. Reliability runtime `1dcf07d` passed all required CI before advancing own main. This documentation checkpoint records publication. No release object created. |
+| Blockers | None locally. Validate branch CI before main, then verify automatic Release workflow, published assets and latest-download URL. |
+| Changed areas | Release workflow/scripts/tests, manifest validator's explicit expected-version parameter, ignored dist output, install/download and maintainer release documentation. |
+| Publication status | User requested automatic releases on 2026-11-04, including public latest-version downloads. Existing push authorization persists. First release will be v0.2.6; future new versions on CI-passing own main publish automatically. Published assets are never overwritten. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
 
@@ -37,6 +37,7 @@ When work stops, replace this checkpoint with current facts. Do not make a futur
 - Numerical coverage targets are proposed goals, not evidence of correctness or blockers to urgent fixes. Capture a truthful baseline before selecting enforceable thresholds.
 - Do not implement all 60 items as one change. Each checkbox is independently trackable; phase exit criteria define sensible stopping points.
 - Optional features may require additional browser permissions or a product decision. Document the tradeoff before implementing them; do not silently widen permissions.
+- The user requested automatic GitHub releases on 2026-11-04. A new version reaching tested own main publishes automatically; same-version pushes skip an existing published release. GitHub ZIPs support Load unpacked installation and manual Chrome Reload updates; this is not Web Store automatic updating. See `RELEASING.md`.
 
 ## Original review baseline and architecture (historical)
 
@@ -213,7 +214,7 @@ Checkboxes represent completion, not merely that work was attempted. Reference t
 | --- | --- | ---: | --- | --- |
 | [x] | DEV-01 | 51 | P1 | Node 24 (>=24.8.0), npm scripts, pinned lockfile, install/check/browser instructions and isolated cache paths are documented. |
 | [ ] | DEV-02 | 52 | P1 | Add scoped lint/format/type checks (JSDoc/checkJs is an option); separate mechanical formatting from behavior changes. |
-| [ ] | DEV-03 | 53 | P2 | Produce runtime-only release ZIPs with manifest/version validation; do not publish a release unless authorized in the active session. |
+| [x] | DEV-03 | 53 | P2 | Produce runtime-only release ZIPs with manifest/version validation; do not publish a release unless authorized in the active session. |
 | [ ] | DEV-04 | 54 | P2 | Maintain a changelog with compatibility and upgrade notes tied to actual releases. |
 | [ ] | DEV-05 | 55 | P2 | Add useful issue templates with versions, reproduction, and safe diagnostic guidance; avoid requesting private URLs/tokens unnecessarily. |
 | [ ] | DEV-06 | 56 | P2 | Add contribution and security-reporting instructions, including test/fixture expectations and a valid reporting channel. |
@@ -339,6 +340,16 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Host resolver protocol, HTTPS/host policy and production permissions remain unchanged. No ads, real archives or personal browser profiles were used. The loopback server and test profiles are torn down. Chrome/storage crash atomicity and general history retention/clear-history UX are not claimed complete; the latter remains DEV-08.
 - Publication: runtime commit `1dcf07d` pushed to `origin/fix/reliability-completion`; all required Windows/Linux unit and Chromium jobs passed at https://github.com/AlexanderArmua/FitDownloader/actions/runs/41770212105 before fast-forwarding own main. This final checkpoint is documentation only.
 - Next task: ARCH-04, then broader ARCH-05; reliability work is complete.
+
+### 2026-11-04 — DEV-03: automatic runtime releases
+
+- The user explicitly requested automatic releases with an easy latest-version download. Branch `chore/automatic-releases`, based on `ba6f961`. Runtime version remains 0.2.6 because extension behavior is unchanged.
+- Added `npm run package`: Git archives committed HEAD using an explicit 11-file runtime allowlist, validating manifest/HTML assets, regular-file modes and matching manifest/package/lock versions. Builds `dist/FitDownloader.zip` and `SHA256SUMS.txt`; generated output is ignored. Development code, dependencies and repository metadata are excluded.
+- Added Release workflow after successful own-main Tests pushes, plus manual retry on main. It checks out the tested SHA without persisted credentials; the publisher checks current main and successful exact-SHA own-repository push CI. PR/fork runs, stale commits, downgrades, mismatched tags/drafts and unexpected upload hosts are refused. Only the release job receives contents-write permission; no new secret required.
+- Uploads are staged in a draft, checked for size/digest and published/latest only after main is rechecked. Retries reuse matching draft assets and replace incomplete draft assets. Published versions/assets are never replaced. Added GitHub-generated release notes with installation/update/checksum instructions and tested commit.
+- Added prominent latest ZIP/release links, release-first installation instructions, and `RELEASING.md` with versioning/retry/validation guidance. GitHub releases do not automatically update unpacked Chrome extensions.
+- Local validation: all 216 unit/DOM/tooling tests pass, including 17 release tests. ZIP tests independently inspect entries, inflate files, verify CRCs, root manifest, allowlist, checksum and deterministic rebuilds. API tests exercise safe gates, retry/idempotency and failures before publication. Lint/manifest/coverage checks pass; application coverage remains 93.73% / 88.83% / 98.71%. Local package builds successfully. No runtime changes; remote required CI and first v0.2.6 publication pending.
+- Publication pending: push branch, verify required CI, advance own main, observe automatic Release, download/check ZIP/checksum and verify stable latest URL. Next implementation task remains ARCH-04, then ARCH-05.
 
 ### Future work-log entry template
 

@@ -49,6 +49,7 @@
 - REL-10 keeps per-resolver AbortControllers scoped to batch ownership. Cancel invalidates the generation and aborts that batch's landing/POST requests and body reads; intentional aborts do not mark failures or pump replacements. Chrome creation already underway still needs late-ID cancellation/reconciliation. Keep request timeouts distinct from intentional cancellation.
 - Tests must not depend on live file-host uptime, advertising, challenge pages, or downloading archives. Use local fixtures and tiny test downloads for browser integration tests.
 - After development commands and CI exist, use the actual repository commands and update this section if they replace the baseline.
+- DEV-03 packages committed HEAD with `npm run package`; keep the explicit runtime allowlist and ZIP tests current when adding runtime assets. Once this release workflow is enabled, a new version on CI-passing own main automatically publishes a GitHub release. Bump manifest/package/lock versions together intentionally. Documentation-only changes with an already published version do not replace releases. See `RELEASING.md`; do not move published tags or overwrite public assets.
 
 ## Before ending work
 

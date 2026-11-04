@@ -2,10 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
-function checkManifest(manifest, exists = file => fs.existsSync(path.join(root, file))) {
+function checkManifest(manifest, exists = file => fs.existsSync(path.join(root, file)), expectedVersion = require('../package.json').version) {
   assert.equal(manifest.manifest_version, 3, 'Only MV3 is supported');
   assert.match(manifest.version, /^\d+\.\d+\.\d+(\.\d+)?$/);
-  assert.equal(manifest.version, require('../package.json').version, 'Package/manifest versions differ');
+  assert.equal(manifest.version, expectedVersion, 'Package/manifest versions differ');
   assert.deepEqual([...manifest.host_permissions].sort(), [
     'https://fitgirl-repacks.site/*', 'https://fuckingfast.co/*', 'https://dl.fuckingfast.co/*'
   ].sort(), 'Production host permissions changed; review explicitly');

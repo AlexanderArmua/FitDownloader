@@ -14,6 +14,7 @@
     "test:regressions": "node --test --test-name-pattern=REL- tests/lifecycle.test.cjs tests/identities.test.cjs tests/migration.test.cjs tests/serialization.test.cjs tests/browser-failures.test.cjs tests/page-rendering.test.cjs tests/download-events.test.cjs tests/cancellation.test.cjs",
     "lint": "eslint background.js popup.js options.js tests scripts playwright.config.cjs eslint.config.cjs",
     "check:manifest": "node scripts/check-manifest.cjs",
+    "package": "node scripts/package-release.cjs",
     "check": "npm run lint && npm run check:manifest && npm run test:coverage"
   },
   "devDependencies": {

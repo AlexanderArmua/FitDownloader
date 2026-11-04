@@ -18,6 +18,7 @@ npm run test:browser
 | `npm run lint` | Scoped correctness rules; not a complete formatting or type-check setup. |
 | `npm run check:manifest` | Manifest/assets/version consistency and production-permission checks. |
 | `npm run check` | Required local static/unit/coverage checks. |
+| `npm run package` | Build runtime-only release ZIP and checksum from committed HEAD into ignored `dist/`. |
 | `npm run test:browser:install` | Download pinned Playwright Chromium into `node_modules/.cache/ms-playwright`. |
 | `npm run test:browser` | Real MV3 extension and popup tests in isolated temporary Chromium profiles. |
 | `npm run test:regressions` | Passing REL-01..10 recovery, identity, migration, serialization, API failure, browser event and cancellation subset. |
@@ -37,6 +38,7 @@ On Linux, Chromium may also need system libraries: use Playwright's documented `
 - `page-rendering.test.cjs`: JSDOM renders the real popup/options HTML and runs their real scripts, including selection/status, injection safety, settings and failures.
 - `popup.test.cjs`: original settings and message-order tests retained.
 - `manifest.test.cjs` / `coverage-report.test.cjs`: verify the repository checks reject invalid manifests and misleading/empty reports.
+- `release.test.cjs`: independently reads ZIP entries, decompresses and checks CRCs, verifies the exact runtime allowlist/root manifest/checksum and deterministic packaging. Mocked GitHub API tests cover the tested-main gate, fork/PR rejection, published-version skips, conflicting tags/drafts, interrupted uploads, checksum checks and release ordering. These are tooling tests; application coverage excludes release scripts.
 - `browser/extension.spec.cjs`: real isolated-world scanning, native mouse/keyboard/modifier selection, settings persistence, state rehydration across browser restart, and a tiny Chrome-managed text download.
 
 The browser popup tests stub only the scan message response when rendering file selection, because opening the popup as a regular tab changes Chrome's active-tab selection. A separate browser test exercises real page scanning. The data-download test injects tracked state and reconciles the actual Chrome download; it is not an end-to-end test of the live host POST protocol.

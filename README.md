@@ -6,17 +6,21 @@
 
 FitDownloader is a simple Chrome extension that scans supported FitGirl repack pages for `fuckingfast.co` links, lets you choose which files to keep, and starts the downloads in the background with a configurable concurrency limit.
 
+**[Download latest version](https://github.com/AlexanderArmua/FitDownloader/releases/latest/download/FitDownloader.zip)** · [Release notes and checksums](https://github.com/AlexanderArmua/FitDownloader/releases/latest)
+
 ## Preview
 
 ![fitdownloader-preview](https://github.com/user-attachments/assets/61baefa5-c3d5-4110-a09e-3efab66661b9)
 
 ## Installation
 
-1. Click **Code → Download ZIP** on this repository, or clone it.
+1. [Download FitDownloader.zip](https://github.com/AlexanderArmua/FitDownloader/releases/latest/download/FitDownloader.zip) and extract it into a permanent folder.
 2. Open `chrome://extensions/` in Chrome.
 3. Turn on **Developer mode**.
 4. Click **Load unpacked**.
-5. Select the unzipped project folder.
+5. Select the extracted folder containing `manifest.json`.
+
+To update, download the latest ZIP, replace the files in the existing extension folder, then click **Reload** on `chrome://extensions/`. GitHub releases do not automatically update unpacked Chrome extensions. Developers can still clone the repository or download its source ZIP.
 
 ## Usage
 
@@ -66,12 +70,18 @@ npm run test:browser:install
 npm run test:browser
 ```
 
-`npm run check` runs scoped lint rules, manifest validation and 199 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
+`npm run check` runs scoped lint rules, manifest validation and 216 unit/DOM/tooling tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
 
 Browser tests load the real extension in a separate Chromium profile, use controlled page fixtures, and download only a tiny generated text fixture. They do not visit the real file host or open advertising. Browser installation is kept in this project's dependency cache.
 
 The four original recovery defects now have passing regressions in the required lifecycle suite. Run `npm run test:regressions` for the focused recovery subset. All CI jobs are required to pass; the temporary non-blocking known-defect job has been removed. See [tests/README.md](tests/README.md) and [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
 
 To check live compatibility, reload the unpacked extension and try one selected file before starting a full batch. Automated tests cover the observed download control and simulated host responses; the host's availability and verification requirements can change independently.
+
+## Automatic releases
+
+After the required **Tests** workflow succeeds on `main`, the **Release** workflow publishes a new manifest version as a GitHub release with `FitDownloader.zip` and `SHA256SUMS.txt`. Reusing an already published version leaves its assets unchanged; change the manifest/package/lock versions together for a new release. No additional repository secret is needed.
+
+`npm run package` builds the runtime-only ZIP from committed `HEAD` into ignored `dist/`. Tests, dependencies, Git metadata and development documentation are excluded. See [RELEASING.md](RELEASING.md) for validation, retries and publishing details.
 
 
