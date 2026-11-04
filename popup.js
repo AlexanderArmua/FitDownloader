@@ -247,7 +247,7 @@ function renderStatusView(session) {
     statusEl.textContent = `${counts.completed} of ${items.length} downloads finished.`;
     if (session.paused) {
       const reason = items.find((item) => item.error)?.error;
-      statusEl.textContent = "Batch paused." + (reason ? ` ${reason}` : "");
+      statusEl.textContent = (counts.downloading ? `Queue paused. ${counts.downloading} download(s) still running.` : "Batch paused.") + (reason ? ` ${reason}` : "");
     }
     activeControlsEl.classList.add("visible");
     startButtonEl.style.display = "none";

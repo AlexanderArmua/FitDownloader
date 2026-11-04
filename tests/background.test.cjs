@@ -225,6 +225,7 @@ test('pause during download creation pauses the newly created download', async (
   await h.run('pumpQueueForBatch(fixtureBatch().id)');
   await tick();
   await h.message({ type: 'pause_downloads' });
+  h.state.records.set(42, {id:42, state:'in_progress', paused:false});
   created(42);
   await tick();
   assert.deepEqual(h.paused, [42]);

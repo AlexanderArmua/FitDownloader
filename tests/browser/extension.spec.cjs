@@ -1,6 +1,7 @@
 const { test: base, expect, chromium } = require('@playwright/test');
 const path = require('node:path');
 const fs = require('node:fs');
+const http = require('node:http');
 const root = path.resolve(__dirname, '../..');
 const fixture = '<!doctype html><title>Fixture Game - FitGirl Repacks</title><main class="entry-content">' +
   Array.from({ length: 3 }, (_, i) => `<a href="https://fuckingfast.co/file${i}#part${i}.rar">Part ${i}</a>`).join('') + '</main>';
@@ -231,6 +232,101 @@ test('real Chrome pause rejection stays tracked and offers Retry Pause in the po
   expect(item.controlError).toBeTruthy();
   await extension.popup.reload();
   await expect(extension.popup.locator('#pause-resume-button')).toHaveText('Retry Pause');
+});
+
+test('tiny Chrome downloads finishing before creation returns complete the queue automatically', async ({ extension }) => {
+  const batchId = await extension.worker.evaluate(async sourceUrl => {
+    await loadSessions();
+    const [tab] = await chrome.tabs.query({ url: sourceUrl });
+    const batch = createSessionFromExtractedLinks(tab, 'Early completion fixture', [0, 1].map(i => ({
+      url: 'https://fuckingfast.co/early' + i, label: 'Tiny file ' + i
+    })), 0);
+    batch.hasStarted = true; sessions[batch.id] = batch;
+    await chrome.storage.sync.set({ concurrency: 1 });
+    // Replace only host resolution and the creation wrapper; Chrome really
+    // downloads each tiny text file and delivers events before this returns.
+    getDirectDownloadUrl = async () => 'https://dl.fuckingfast.co/dl/tiny.txt';
+    startDownload = async () => {
+      const id = await chrome.downloads.download({ url: 'data:text/plain,Early%20completion%20fixture', saveAs: false });
+      for (let attempt = 0; attempt < 500; attempt++) {
+        const [download] = await chrome.downloads.search({ id });
+        if (download?.state === 'complete') return id;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      throw new Error('Tiny fixture did not finish before creation returned');
+    };
+    await pumpQueueForBatch(batch.id);
+    return batch.id;
+  }, extension.source.url());
+  await expect.poll(() => extension.worker.evaluate(id => sessions[id].items.map(item => item.state), batchId)).toEqual(['completed', 'completed']);
+  const saved = await extension.worker.evaluate(async id => (await chrome.storage.local.get('ffBatchState')).ffBatchState.batches[id], batchId);
+  expect(saved.items.every(item => item.downloadId === null)).toBe(true);
+});
+
+test('real browser download controls update the open popup without rescanning', async ({ extension }) => {
+  const body = Buffer.from('Controlled text fixture.\n'.repeat(1000));
+  const held = new Set();
+  const server = http.createServer((request, response) => {
+    const offset = Number(request.headers.range?.match(/bytes=(\d+)/)?.[1] || 0);
+    response.writeHead(offset ? 206 : 200, { 'Content-Type': 'text/plain', 'Content-Length': body.length - offset,
+      'Accept-Ranges': 'bytes', 'Content-Disposition': 'attachment; filename="controlled-text.txt"',
+      ...(offset ? { 'Content-Range': `bytes ${offset}-${body.length - 1}/${body.length}` } : {}) });
+    response.write(body.subarray(offset, offset + 4096));
+    held.add(response); response.on('close', () => held.delete(response));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const result = await extension.worker.evaluate(async ({ sourceUrl, downloadUrl }) => {
+      await loadSessions();
+      const [tab] = await chrome.tabs.query({ url: sourceUrl });
+      const batch = createSessionFromExtractedLinks(tab, 'Browser controls fixture', [{ url: 'https://fuckingfast.co/controlled', label: 'Controlled text' }], 0);
+      const id = await chrome.downloads.download({ url: downloadUrl, filename: 'controlled-text.txt', saveAs: false });
+      batch.hasStarted = true; batch.paused = true;
+      batch.items[0].downloadId = id; batch.items[0].state = 'downloading';
+      sessions[batch.id] = batch;
+      await reconcileBatch(batch.id); await saveSessions();
+      return { batchId: batch.id, downloadId: id };
+    }, { sourceUrl: extension.source.url(), downloadUrl: `http://127.0.0.1:${server.address().port}/tiny.txt` });
+    await extension.popup.goto(`chrome-extension://${extension.id}/popup.html`);
+    await expect(extension.popup.locator('.file-status')).toHaveText('downloading');
+    await extension.worker.evaluate(id => chrome.downloads.pause(id), result.downloadId);
+    await expect(extension.popup.locator('.file-status')).toHaveText('paused');
+    await extension.worker.evaluate(id => chrome.downloads.resume(id), result.downloadId);
+    await expect(extension.popup.locator('.file-status')).toHaveText('downloading');
+    await expect(extension.popup.locator('#status')).toContainText('Queue paused');
+    await extension.worker.evaluate(id => chrome.downloads.cancel(id), result.downloadId);
+    await expect(extension.popup.locator('.file-status')).toHaveText('cancelled');
+    await extension.worker.evaluate(id => chrome.downloads.erase({ id }), result.downloadId);
+    await expect.poll(() => extension.worker.evaluate(async id => !!(await chrome.storage.local.get('ffBatchState')).ffBatchState.downloadHistory[id], result.downloadId)).toBe(false);
+  } finally {
+    for (const response of held) response.end();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('popup Cancel aborts a pending resolver through native browser AbortSignals', async ({ extension }) => {
+  const batchId = await extension.worker.evaluate(async sourceUrl => {
+    await loadSessions();
+    const [tab] = await chrome.tabs.query({ url: sourceUrl });
+    const batch = createSessionFromExtractedLinks(tab, 'Cancel network fixture', [{ url: 'https://fuckingfast.co/pending', label: 'Pending request' }], 0);
+    batch.hasStarted = true; sessions[batch.id] = batch;
+    globalThis.fixtureAborted = false; globalThis.fixtureRequested = false;
+    fetch = (url, options) => new Promise((resolve, reject) => {
+      globalThis.fixtureRequested = true;
+      options.signal.addEventListener('abort', () => {
+        globalThis.fixtureAborted = true; reject(options.signal.reason);
+      }, { once: true });
+    });
+    await pumpQueueForBatch(batch.id);
+    return batch.id;
+  }, extension.source.url());
+  await expect.poll(() => extension.worker.evaluate(() => globalThis.fixtureRequested)).toBe(true);
+  await extension.popup.goto(`chrome-extension://${extension.id}/popup.html`);
+  await expect(extension.popup.locator('#cancel-button')).toBeVisible();
+  await extension.popup.locator('#cancel-button').click();
+  await expect.poll(() => extension.worker.evaluate(() => globalThis.fixtureAborted)).toBe(true);
+  expect(await extension.worker.evaluate(id => sessions[id].items[0].state, batchId)).toBe('cancelled');
 });
 
 test('failed batch results and Retry remain visible after the popup reopens', async ({ extension }) => {

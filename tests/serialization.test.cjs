@@ -141,6 +141,7 @@ test('REL-06: late Chrome creation after Cancel is discarded without taking owne
   h.chrome.downloads.download = (options, done) => { callback = done; created.resolve(); };
   await h.context.pumpQueueForBatch(h.batchId()); await created.promise;
   assert.equal((await h.message({ type: 'cancel_downloads', batchId: h.batchId() })).ok, true);
+  h.state.records.set(42, {id:42, state:'in_progress', paused:false});
   callback(42); await tick();
   assert.deepEqual(h.cancelled, [42]);
   assert.equal(h.run('downloadIdToKey.size'), 0);

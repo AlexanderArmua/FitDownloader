@@ -15,6 +15,7 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
   const listeners = {};
   const requests = [], downloads = [], paused = [], resumed = [], cancelled = [], broadcasts = [], warnings = [];
   const state = { local, concurrency, records, activeTab: { id: 1, url: 'https://fitgirl-repacks.site/game/' }, storageError: null };
+  let nextDownloadId = Math.max(0, ...records.keys()) + 1;
   const event = name => ({ addListener(fn) { listeners[name] = fn; } });
   const chrome = {
     runtime: {
@@ -42,9 +43,10 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
     },
     downloads: {
       onChanged: event('changed'),
+      onErased: event('erased'),
       search(query, callback) { callback(records.has(query.id) ? [clone(records.get(query.id))] : []); },
       download(options, callback) {
-        const id = downloads.length + 1;
+        const id = nextDownloadId++;
         downloads.push(clone(options));
         records.set(id, { id, state: 'in_progress', paused: false });
         callback(id);
@@ -56,7 +58,7 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
     scripting: { executeScript: async () => [{ result: { title: 'Game', items: [{ url: 'https://fuckingfast.co/file0', label: 'File 0' }] } }] }
   };
   const context = vm.createContext({
-    URL, AbortSignal, chrome, crypto: require('node:crypto').webcrypto,
+    URL, AbortSignal, AbortController, chrome, crypto: require('node:crypto').webcrypto,
     console: { warn: (...args) => warnings.push(args), error: (...args) => warnings.push(args) },
     fetch: async (url, options) => {
       requests.push({ url, options });
@@ -84,6 +86,7 @@ function harness({ local = {}, concurrency = 2, records = new Map() } = {}) {
   `);
   const reconcile = async () => { await context.loadSessions(); await context.reconcileBatch(batchId()); };
   const emit = async (name, value) => {
+    if (name === 'erased') records.delete(value);
     if (name === 'changed' && records.has(value.id)) {
       const record = records.get(value.id);
       if (value.state) record.state = value.state.current;

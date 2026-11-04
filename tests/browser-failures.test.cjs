@@ -99,6 +99,7 @@ test('REL-07: failed automatic Pause after Chrome creation persists the real dow
   await h.context.pumpQueueForBatch(h.batchId()); await created.promise;
   await h.message({ type: 'pause_downloads', batchId: h.batchId() });
   h.chrome.downloads.pause = async () => { throw new Error('Automatic pause rejected'); };
+  h.state.records.set(42, {id:42, state:'in_progress', paused:false});
   callback(42); await tick();
   assert.equal(h.run('fixtureBatch().items[0].downloadId'), 42);
   assert.equal(h.run('fixtureBatch().items[0].state'), 'downloading');
@@ -114,6 +115,7 @@ test('REL-07: failed cancellation of a late creation retains recoverable ownersh
   const owner = h.batchId();
   await h.message({ type: 'cancel_downloads', batchId: owner });
   h.chrome.downloads.cancel = async () => { throw new Error('Late cancel rejected'); };
+  h.state.records.set(42, {id:42, state:'in_progress', paused:false});
   callback(42); await tick();
   assert.equal(h.run('downloadIdToKey.has(42)'), true);
   const saved = h.state.local.ffBatchState;
@@ -185,10 +187,12 @@ test('REL-07: a late uncancellable download cannot overwrite a restarted file', 
   await h.message({ type: 'start_downloads', batchId: owner, items: [{ id: item }] }); await tick();
   assert.equal(callbacks.length, 2);
   h.chrome.downloads.cancel = async () => { throw new Error('Old creation still running'); };
+  h.state.records.set(42, {id:42, state:'in_progress', paused:false});
   callbacks[0](42); await tick();
   assert.equal(h.run('fixtureBatch().items[0].downloadId'), null);
   assert.equal(h.run('fixtureBatch().items[0].state'), 'starting');
   assert.notEqual(h.run('downloadIdToKey.get(42).itemId'), item);
+  h.state.records.set(43, {id:43, state:'in_progress', paused:false});
   callbacks[1](43); await tick();
   assert.equal(h.run('downloadIdToKey.size'), 2);
   assert.equal(h.run('fixtureBatch().items[0].downloadId'), 43);
@@ -205,6 +209,7 @@ test('REL-07: a late uncancellable download restores a removed batch for recover
   await h.emit('removed', 1);
   assert.equal(h.run('Object.keys(sessions).length'), 0);
   h.chrome.downloads.cancel = async () => { throw new Error('Still running'); };
+  h.state.records.set(42, {id:42, state:'in_progress', paused:false});
   callback(42); await tick();
   assert.equal(h.state.local.ffBatchState.batches[owner].items[0].downloadId, 42);
   assert.equal(h.state.local.ffBatchState.batches[owner].sourceAttached, false);

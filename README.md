@@ -31,6 +31,8 @@ FitDownloader is a simple Chrome extension that scans supported FitGirl repack p
 9. After a full browser restart, press **Resume** to start queued work. Ordinary background-worker recovery reconciles existing Chrome downloads before continuing eligible queued files.
 10. Saved batches and files retain their identities even when tabs change or a queue is reordered. Existing saved queues are upgraded automatically; active Chrome downloads retain their download IDs.
 11. If Chrome rejects Pause, Resume or Cancel, successful changes are kept and affected files remain tracked. Use **Retry Pause**, **Retry Resume** or **Retry Cancel** to retry the unfinished operation. New queued files wait while an operation is incomplete; some existing downloads may still be running.
+12. Pause, Resume, Cancel and removal actions in Chrome's Downloads update the open popup. Individually paused files retain their parallel slots. Resuming an interrupted download in Chrome restores tracking and holds queued files until you choose **Resume** in the extension.
+13. Cancel also stops pending file-host requests and response reads. If Chrome is already creating a download, cancellation is applied once its ID is available. Tiny downloads that finish immediately no longer leave a stuck queue slot.
 
 ## Notes
 
@@ -41,6 +43,7 @@ FitDownloader is a simple Chrome extension that scans supported FitGirl repack p
 - Source pages must use HTTPS on the exact `fitgirl-repacks.site` hostname. File links using HTTP are upgraded to HTTPS before any request. Downloads never fall back to HTTP.
 - Scanning runs in an isolated script environment. Both landing and direct download URLs are checked against the supported hosts.
 - Hover a filename to inspect its URL, or a failed download's status to read its error.
+- Local extension storage keeps browser download IDs associated with their batch, file links and labels so interrupted attempts can be recognized after restarting. Erasing a download from Chrome's history removes that association; finished batch results remain available. A dedicated clear-history control remains planned work.
 - Current file-host pages use a `hx-post="/f/<file-id>/go"` Download control instead of embedding a direct archive URL. The extension requests that exact same-host endpoint and reads secure links from HTMX response headers or response text. It does not click advertising controls, open ad tabs, or execute fetched scripts. Legacy embedded links still work.
 - Requests include the browser's existing cookies for the supported file host; cookie values are never read by extension code. A host verification/refusal response pauses the batch and keeps files queued. Open the original file page to complete any verification yourself, then click **Resume** in the extension. This may still fail if the host does not accept requests from extensions.
 
@@ -63,7 +66,7 @@ npm run test:browser:install
 npm run test:browser
 ```
 
-`npm run check` runs scoped lint rules, manifest validation and 172 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
+`npm run check` runs scoped lint rules, manifest validation and 199 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
 
 Browser tests load the real extension in a separate Chromium profile, use controlled page fixtures, and download only a tiny generated text fixture. They do not visit the real file host or open advertising. Browser installation is kept in this project's dependency cache.
 

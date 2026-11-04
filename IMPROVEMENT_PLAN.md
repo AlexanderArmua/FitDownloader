@@ -2,24 +2,24 @@
 
 Created: 2026-11-03 (America/Buenos_Aires).
 
-This is a trackable implementation backlog and handoff document for the project. Read alongside `AGENTS.md`. The test foundation and REL-01 through REL-07 are implemented and validated. Remaining reliability and product work is tracked below.
+This is a trackable implementation backlog and handoff document for the project. Read alongside `AGENTS.md`. The test foundation and all ten reliability/recovery tasks are implemented and validated. Remaining architecture, tooling and product work is tracked below; 21 of 60 tasks are complete.
 
 ## Resume checkpoint
 
 | Field | Current value |
 | --- | --- |
-| Work status | REL-07 complete: awaited controls, partial-success reporting and retained download ownership on API rejection. Version 0.2.5 published to the user's repository after required CI passed. |
+| Work status | Reliability and recovery complete locally: REL-08/09/10 implemented and validated. Version 0.2.6 awaiting publication checks. |
 | Primary repository | https://github.com/AlexanderArmua/FitDownloader |
 | Source baseline | Original reviewed commit `a4afffa92c75d89ccc3b9061ba2ecdd65d82531e`, version 0.2.1; current runtime commit `6fdac97`, version 0.2.5. |
-| Current implementation branch | REL-07 branch `fix/browser-operation-failures`, runtime commit `6fdac97`, fast-forwarded to `main` with this documentation checkpoint. Start a new focused branch for REL-09. |
-| Next task | **REL-09:** early download-completion registration, then REL-08 browser download-manager event synchronization. |
-| Latest implementation boundary | Awaited per-file Chrome controls, persisted retry intent/errors, generation-safe partial Cancel, late creation recovery, failed-query preservation and popup retry/error handling. Host protocol and permissions unchanged. |
-| Next behavior work | Reproduce terminal download events arriving before the creation callback/map registration, including tiny downloads, recovery and Cancel interleavings. Reconcile before releasing slots; prevent duplicate starts. |
-| Current validation | `npm run check`: 172 passing unit/DOM tests. `npm run test:browser`: all 11 pass. All 63 named regressions pass. Coverage: 93.26% lines / 89.59% branches / 98.59% functions, above unchanged floors. Required Windows/Linux unit and Chromium CI jobs passed: https://github.com/AlexanderArmua/FitDownloader/actions/runs/41763729760 . |
+| Current implementation branch | `fix/reliability-completion`, based on main `41ec8b7`; version 0.2.6. Check Git for final publication revision. |
+| Next task | **ARCH-04:** validate message senders/payloads and limits, then ARCH-05 broader saved-state validation and recovery. Keep other unchecked tasks explicit, including remaining DEV-02 static tooling. |
+| Latest implementation boundary | Immediate registration reconciliation, bounded early events, external Chrome event synchronization, persisted interrupted-attempt associations, and batch-scoped abortable resolver requests/body reads. Host protocol and production permissions unchanged. |
+| Next behavior work | Begin Phase 2 with adversarial message-shape/sender/limit tests before enforcing validation. Preserve existing batch ownership and active download recovery; do not turn malformed input into lost Chrome IDs. |
+| Current validation | `npm run check`: 199 passing unit/DOM tests. `npm run test:browser`: all 14 pass. All 90 named regressions pass. Coverage: 93.73% lines / 88.83% branches / 98.71% functions, above unchanged floors. Remote CI pending for reliability completion. |
 | Product decisions | Closing source pages keeps started batches; the popup exposes saved batches from any tab. Full browser startup pauses queues until Resume; worker wake continues eligible work after reconciliation. Global concurrency remains an optional future feature. |
-| Blockers | None. Windows browser tests need normal process permissions. |
-| Changed areas | Chrome control/search failure handling, durable error/retry fields, popup partial-result/retry flow, failure regression tests, real Chrome rejection integration, version 0.2.5 and docs. |
-| Publication status | User authorized pushing and continuing on 2026-11-03. REL-07 runtime `6fdac97` passed all required CI before advancing own main. This documentation checkpoint records publication. No release object created. |
+| Blockers | None locally. Windows browser tests need normal process permissions. Check required remote CI before advancing main. |
+| Changed areas | Chrome event/registration handling, optional saved resume associations, resolver cancellation, paused-slot/status semantics, realistic creation fixtures and browser integration; version 0.2.6 and docs. |
+| Publication status | User authorized pushing and continuing on 2026-11-03. Reliability completion awaits feature-branch push and required CI. No release object created. |
 
 To resume in a new chat, ask: **“Read AGENTS.md and IMPROVEMENT_PLAN.md, inspect the checkout, and continue from the resume checkpoint.”**
 
@@ -137,7 +137,7 @@ Checkboxes represent completion, not merely that work was attempted. Reference t
 | Done | ID | Review | Priority | Deliverable / acceptance criterion |
 | --- | --- | ---: | --- | --- |
 | [x] | TEST-01 | 11 | P1 | Collect truthful application coverage, including unexecuted scripts; eliminate the empty-report 100% trap and document reproduction. |
-| [x] | TEST-02 | 12 | P1 | Add CI for tests, application coverage, applicable static checks, and manifest validation; report local versus remote results separately. Authored locally; remote execution pending publication. |
+| [x] | TEST-02 | 12 | P1 | Add CI for tests, application coverage, applicable static checks, and manifest validation; report local versus remote results separately. Required Windows/Linux checks and Chromium integration run on pushes; publication results are recorded above. |
 | [x] | TEST-03 | 13 | P1 | Establish a verified baseline and coverage floor, then ratchet upward. Enforced overall floors: 85% lines / 75% branches / 95% functions; current results recorded above. |
 | [x] | TEST-04 | 14 | P1 | All four original defects demonstrated red, fixed, and promoted into the required lifecycle suite; 12 focused recovery checks pass and the diagnostic CI exception is removed. |
 | [x] | TEST-05 | 15 | P1 | Exercise completion, interruption, missing downloads, saved-state hydration, and worker recreation through public event/message boundaries. |
@@ -158,9 +158,9 @@ Checkboxes represent completion, not merely that work was attempted. Reference t
 | [x] | REL-05 | 5 | P1 | Durable batch/file IDs route queues, messages and completion; tab/index-reuse failures fixed. Schema-2 migration preserves Chrome download IDs, stable reloads, legacy backups and failure safety. |
 | [x] | REL-06 | 6 | P1 | Serialize mutations/persistence and share hydration promises; controlled concurrency tests prove older reads/writes cannot overwrite newer state. |
 | [x] | REL-07 | 7 | P1 | Await pause/resume/cancel results; represent API rejection accurately and retain tracking of downloads still running. |
-| [ ] | REL-08 | 8 | P1 | Browser download-manager pause/resume/cancel/removal changes synchronize with batch state without reopening the popup. |
-| [ ] | REL-09 | 9 | P1 | Completion arriving before mapping registration is reconciled without lost progress, stuck slots, or duplicate work. |
-| [ ] | REL-10 | 10 | P1 | Cancel aborts outstanding resolver fetch/body reads; intentional aborts do not become misleading failures or trigger replacement downloads. |
+| [x] | REL-08 | 8 | P1 | Browser download-manager pause/resume/cancel/removal changes synchronize with batch state without reopening the popup. |
+| [x] | REL-09 | 9 | P1 | Completion arriving before mapping registration is reconciled without lost progress, stuck slots, or duplicate work. |
+| [x] | REL-10 | 10 | P1 | Cancel aborts outstanding resolver fetch/body reads; intentional aborts do not become misleading failures or trigger replacement downloads. |
 
 ### Architecture and security hardening
 
@@ -327,6 +327,17 @@ The fourth point is an architectural gap identified by inspection; do not misrep
 - Limits: slow browser callbacks still serialize later controls. Chrome operations and storage writes are not a distributed transaction; storage failure recovery still queries Chrome. Automatic external download-manager updates remain REL-08; early terminal events before map registration remain REL-09.
 - Publication: runtime commit `6fdac97` pushed to `origin/fix/browser-operation-failures`; all required Windows/Linux unit and Chromium jobs passed at https://github.com/AlexanderArmua/FitDownloader/actions/runs/41763729760 before fast-forwarding own main. This final checkpoint is documentation only.
 - Next task: REL-09, then REL-08.
+
+### 2026-11-03 — REL-08/09/10: reliability and recovery complete
+
+- Branch `fix/reliability-completion`, based on `41ec8b7`; version 0.2.6. The user explicitly requested completing the remaining reliability/recovery section. All REL-01..10 acceptance criteria are now met; other backlog sections remain independently tracked.
+- REL-09: demonstrated six early-event failures before the fix. Persist ownership and immediately reconcile new Chrome IDs; replay bounded early events if necessary. Up to 256 event records exist only during pending creation, then are cleared. Tiny completed/interrupted downloads free exactly one slot; stale Cancel callbacks do not restore phantom ownership. Two additional red/green regressions ensure erasure after an early completion/interruption preserves the known terminal result. Recovery reconciles a persisted ID when registration processing stops midway.
+- REL-08: demonstrated external Pause/Resume/Erase failures and lost interrupted-attempt association before the fixes. Chrome events update state, persistence and the open popup. Individually paused files retain slots. Resumed interrupted attempts restore their own identity even after worker recreation, without overwriting a newer retry; queued work waits for explicit Resume. The optional schema-2 `downloadHistory` stores managed Chrome IDs, batch/file IDs, generation, link/label and last state; erasure removes associations while retaining finished results. Existing snapshots without this field remain supported; invalid new associations are preserved and rejected during hydration.
+- REL-10: demonstrated five abort failures before implementation. Per-resolver controllers compose batch cancellation with existing request timeouts. Cancel invalidates the generation and aborts landing/POST fetches and body reads for that batch only, without warnings, false failures or replacement downloads. Chrome creation already underway still follows late-ID cancellation/ownership recovery. Timeouts remain real errors.
+- Test harness now models unique browser download IDs across worker recreation, exposes erased events and records actual Chrome IDs before delayed creation callbacks. Older manually delayed fixtures were corrected to include real browser records before those callbacks.
+- Validation: 199 unit/DOM tests, all 90 named regressions, lint, manifest and coverage integrity checks pass. Coverage: 93.73% lines / 88.83% branches / 98.71% functions; thresholds unchanged. All 14 Chromium tests pass, including real tiny early-completion downloads, real Chrome controls against a small loopback text fixture, and native AbortSignals through popup Cancel. The held-text fixture initially sent too few bytes for Chrome to recognize the download; corrected its initial chunk/attachment header and reran successfully.
+- Host resolver protocol, HTTPS/host policy and production permissions remain unchanged. No ads, real archives or personal browser profiles were used. The loopback server and test profiles are torn down. Chrome/storage crash atomicity and general history retention/clear-history UX are not claimed complete; the latter remains DEV-08.
+- Publication pending required CI. Next task: ARCH-04, then broader ARCH-05; reliability work is complete.
 
 ### Future work-log entry template
 

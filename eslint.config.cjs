@@ -1,4 +1,4 @@
-const browser = ['chrome', 'document', 'window', 'console', 'setTimeout', 'clearTimeout', 'URL', 'AbortSignal', 'fetch', 'crypto'];
+const browser = ['chrome', 'document', 'window', 'console', 'setTimeout', 'clearTimeout', 'URL', 'AbortSignal', 'AbortController', 'fetch', 'crypto'];
 const node = ['require', 'module', 'exports', '__dirname', 'process', 'console', 'Buffer', 'URL', 'AbortSignal', 'AbortController', 'Headers', 'setImmediate', 'setTimeout', 'clearTimeout', 'structuredClone'];
 const globals = names => Object.fromEntries(names.map(name => [name, 'readonly']));
 module.exports = [
@@ -11,6 +11,7 @@ module.exports = [
   { files: ['**/*.cjs'], languageOptions: { sourceType: 'commonjs', globals: globals([...node, ...browser]) } },
   { files: ['tests/browser/*.cjs'], languageOptions: { globals: {
     extractFuckingFastLinks: 'readonly', createSessionFromExtractedLinks: 'readonly', reconcileBatch: 'readonly', loadSessions: 'readonly', getCurrentSettings: 'readonly', saveSessions: 'readonly', ensureSessionForTab: 'readonly',
+    getDirectDownloadUrl: 'writable', startDownload: 'writable', pumpQueueForBatch: 'readonly',
     sessionsLoaded: 'writable', downloadMapLoaded: 'writable', sessions: 'writable'
   } } }
 ];

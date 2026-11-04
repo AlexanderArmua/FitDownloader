@@ -51,6 +51,12 @@ test('verification pause displays reason and Resume even when every file is queu
   assert.equal(h.el('pause-resume-button').textContent, 'Resume');
 });
 
+test('REL-08: an external Resume is shown as running while the batch queue stays paused', t => {
+  const h = setup(t, session(['downloading', 'queued'], { hasStarted: true, paused: true }));
+  assert.match(h.el('status').textContent, /Queue paused.*still running/);
+  assert.equal(h.el('pause-resume-button').textContent, 'Resume');
+});
+
 test('Select All clears and restores selection and Start availability', t => {
   const h = setup(t);
   h.el('select-all').click();
